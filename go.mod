@@ -4,7 +4,7 @@ go 1.25.1
 
 require (
 	github.com/docker/docker v28.5.1+incompatible
-	miren.dev/mflags v0.0.0-20251008044122-4e5dce8daca1
+	miren.dev/mflags v0.0.0-20251016223241-fa7cac015aab
 )
 
 require (

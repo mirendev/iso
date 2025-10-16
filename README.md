@@ -36,23 +36,21 @@ go get miren.dev/iso
 Run a command in the isolated environment:
 
 ```bash
-./iso run [flags] -- <command> [args...]
+./iso run [flags] <command> [args...]
 ```
-
-**Note**: Use `--` to separate iso flags from the command you want to run.
 
 Example:
 ```bash
-./iso run -- go test ./...
-./iso run -- make build
-./iso run -- echo "Hello from iso"
-./iso run -- ls -la
+./iso run go test ./...
+./iso run make build
+./iso run echo "Hello from iso"
+./iso run ls -la
+./iso run grep -r "pattern" .
 ```
 
-If your command doesn't have flags that conflict with iso flags, you can omit `--`:
+The `--` separator is optional but still supported for compatibility:
 ```bash
-./iso run go version
-./iso run pwd
+./iso run -- ls -la
 ```
 
 The first time you run a command, `iso` will:
@@ -144,13 +142,13 @@ The tool will automatically mount your current directory to `/workspace` in the 
 ./iso status
 
 # Run tests (builds image, creates container, runs tests)
-./iso run -- go test ./...
+./iso run go test ./...
 
 # Run another command (reuses existing container)
-./iso run -- go build
+./iso run go build
 
 # List files in the workspace
-./iso run -- ls -la
+./iso run ls -la
 
 # Check status (shows running container)
 ./iso status

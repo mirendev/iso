@@ -56,10 +56,17 @@ func registerRunCommand(dispatcher *mflags.Dispatcher) {
 	fs.String("image", 'i', defaultImageName, "Name of the Docker image")
 	fs.String("container", 'c', defaultContainerName, "Name of the container")
 
+	// Allow unknown flags to pass through to the command
+	fs.AllowUnknownFlags(true)
+
 	handler := func(fs *mflags.FlagSet, args []string) error {
 		dockerfile := fs.Lookup("dockerfile").Value.String()
 		imageName := fs.Lookup("image").Value.String()
 		containerName := fs.Lookup("container").Value.String()
+
+		// Combine positional args and unknown flags to form the command
+		// Unknown flags come after positional args
+		command := append(args, fs.UnknownFlags()...)
 
 		client, err := iso.New(iso.Options{
 			DockerfilePath: dockerfile,
@@ -71,7 +78,7 @@ func registerRunCommand(dispatcher *mflags.Dispatcher) {
 		}
 		defer client.Close()
 
-		exitCode, err := client.Run(args)
+		exitCode, err := client.Run(command)
 		if err != nil {
 			return err
 		}

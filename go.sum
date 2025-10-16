@@ -115,3 +115,5 @@ gotest.tools/v3 v3.5.2 h1:7koQfIKdy+I8UTetycgUqXWSDwpgv193Ka+qRsmBY8Q=
 gotest.tools/v3 v3.5.2/go.mod h1:LtdLGcnqToBH83WByAAi/wiwSFCArdFIUV/xxN4pcjA=
 miren.dev/mflags v0.0.0-20251008044122-4e5dce8daca1 h1:kPSOTWOLYwb2PygDzAJGQpBm8MtfffzLr0pCDObZ78A=
 miren.dev/mflags v0.0.0-20251008044122-4e5dce8daca1/go.mod h1:Le4oPPJnF/oZn+UNRE+HBF02l6saTLHngIoLmYnoeys=
+miren.dev/mflags v0.0.0-20251016223241-fa7cac015aab h1:EaRGX0q5USL1WvxrlkknLRsHg2DSDOTUBdL0h/1I1kw=
+miren.dev/mflags v0.0.0-20251016223241-fa7cac015aab/go.mod h1:Le4oPPJnF/oZn+UNRE+HBF02l6saTLHngIoLmYnoeys=
