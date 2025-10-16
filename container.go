@@ -1,4 +1,4 @@
-package main
+package iso
 
 import (
 	"fmt"
@@ -9,22 +9,22 @@ import (
 	"github.com/docker/docker/api/types/image"
 )
 
-// ContainerManager handles container lifecycle operations
-type ContainerManager struct {
-	docker        *DockerClient
+// containerManager handles container lifecycle operations
+type containerManager struct {
+	docker        *dockerClient
 	imageName     string
 	containerName string
 	dockerfilePath string
 }
 
-// NewContainerManager creates a new container manager
-func NewContainerManager(dockerfilePath, imageName, containerName string) (*ContainerManager, error) {
-	docker, err := NewDockerClient()
+// newContainerManager creates a new container manager
+func newContainerManager(dockerfilePath, imageName, containerName string) (*containerManager, error) {
+	docker, err := newDockerClient()
 	if err != nil {
 		return nil, err
 	}
 
-	return &ContainerManager{
+	return &containerManager{
 		docker:        docker,
 		imageName:     imageName,
 		containerName: containerName,
@@ -32,21 +32,21 @@ func NewContainerManager(dockerfilePath, imageName, containerName string) (*Cont
 	}, nil
 }
 
-// Close closes the container manager and Docker client
-func (cm *ContainerManager) Close() error {
-	return cm.docker.Close()
+// close closes the container manager and Docker client
+func (cm *containerManager) close() error {
+	return cm.docker.close()
 }
 
-// EnsureImage ensures the Docker image exists, building it if necessary
-func (cm *ContainerManager) EnsureImage() error {
-	exists, err := cm.docker.ImageExists(cm.imageName)
+// ensureImage ensures the Docker image exists, building it if necessary
+func (cm *containerManager) ensureImage() error {
+	exists, err := cm.docker.imageExists(cm.imageName)
 	if err != nil {
 		return err
 	}
 
 	if !exists {
 		fmt.Printf("Building image %s from %s...\n", cm.imageName, cm.dockerfilePath)
-		if err := cm.docker.BuildImage(cm.dockerfilePath, cm.imageName); err != nil {
+		if err := cm.docker.buildImage(cm.dockerfilePath, cm.imageName); err != nil {
 			return err
 		}
 		fmt.Printf("Image %s built successfully\n", cm.imageName)
@@ -55,8 +55,8 @@ func (cm *ContainerManager) EnsureImage() error {
 	return nil
 }
 
-// StartContainer starts a new container
-func (cm *ContainerManager) StartContainer() (string, error) {
+// startContainer starts a new container
+func (cm *containerManager) startContainer() (string, error) {
 	// Get current working directory to mount
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -98,10 +98,10 @@ func (cm *ContainerManager) StartContainer() (string, error) {
 	return resp.ID, nil
 }
 
-// RunCommand runs a command in the container
-func (cm *ContainerManager) RunCommand(command []string) error {
+// runCommand runs a command in the container
+func (cm *containerManager) runCommand(command []string) error {
 	// Check if container is already running
-	running, err := cm.docker.IsContainerRunning(cm.containerName)
+	running, err := cm.docker.isContainerRunning(cm.containerName)
 	if err != nil {
 		return err
 	}
@@ -109,14 +109,14 @@ func (cm *ContainerManager) RunCommand(command []string) error {
 	var containerID string
 	if !running {
 		// Check if container exists but is stopped
-		exists, err := cm.docker.ContainerExists(cm.containerName)
+		exists, err := cm.docker.containerExists(cm.containerName)
 		if err != nil {
 			return err
 		}
 
 		if exists {
 			// Get container ID and start it
-			containerID, err = cm.docker.GetContainerID(cm.containerName)
+			containerID, err = cm.docker.getContainerID(cm.containerName)
 			if err != nil {
 				return err
 			}
@@ -126,19 +126,19 @@ func (cm *ContainerManager) RunCommand(command []string) error {
 			}
 		} else {
 			// Ensure image exists
-			if err := cm.EnsureImage(); err != nil {
+			if err := cm.ensureImage(); err != nil {
 				return err
 			}
 
 			// Start a new container
 			fmt.Printf("Starting new container %s...\n", cm.containerName)
-			containerID, err = cm.StartContainer()
+			containerID, err = cm.startContainer()
 			if err != nil {
 				return err
 			}
 		}
 	} else {
-		containerID, err = cm.docker.GetContainerID(cm.containerName)
+		containerID, err = cm.docker.getContainerID(cm.containerName)
 		if err != nil {
 			return err
 		}
@@ -183,9 +183,9 @@ func (cm *ContainerManager) RunCommand(command []string) error {
 	return nil
 }
 
-// StopContainer stops and removes the container
-func (cm *ContainerManager) StopContainer() error {
-	exists, err := cm.docker.ContainerExists(cm.containerName)
+// stopContainer stops and removes the container
+func (cm *containerManager) stopContainer() error {
+	exists, err := cm.docker.containerExists(cm.containerName)
 	if err != nil {
 		return err
 	}
@@ -195,7 +195,7 @@ func (cm *ContainerManager) StopContainer() error {
 		return nil
 	}
 
-	containerID, err := cm.docker.GetContainerID(cm.containerName)
+	containerID, err := cm.docker.getContainerID(cm.containerName)
 	if err != nil {
 		return err
 	}
@@ -217,24 +217,24 @@ func (cm *ContainerManager) StopContainer() error {
 	return nil
 }
 
-// RebuildImage rebuilds the Docker image
-func (cm *ContainerManager) RebuildImage() error {
+// rebuildImage rebuilds the Docker image
+func (cm *containerManager) rebuildImage() error {
 	// Check if image exists and remove it
-	exists, err := cm.docker.ImageExists(cm.imageName)
+	exists, err := cm.docker.imageExists(cm.imageName)
 	if err != nil {
 		return err
 	}
 
 	if exists {
 		fmt.Printf("Removing existing image %s...\n", cm.imageName)
-		if err := cm.docker.RemoveImage(cm.imageName); err != nil {
+		if err := cm.docker.removeImage(cm.imageName); err != nil {
 			return err
 		}
 	}
 
 	// Build the image
 	fmt.Printf("Building image %s from %s...\n", cm.imageName, cm.dockerfilePath)
-	if err := cm.docker.BuildImage(cm.dockerfilePath, cm.imageName); err != nil {
+	if err := cm.docker.buildImage(cm.dockerfilePath, cm.imageName); err != nil {
 		return err
 	}
 
@@ -242,9 +242,9 @@ func (cm *ContainerManager) RebuildImage() error {
 	return nil
 }
 
-// GetStatus returns the status of the container
-func (cm *ContainerManager) GetStatus() (string, error) {
-	exists, err := cm.docker.ContainerExists(cm.containerName)
+// getStatus returns the status of the container
+func (cm *containerManager) getStatus() (string, error) {
+	exists, err := cm.docker.containerExists(cm.containerName)
 	if err != nil {
 		return "", err
 	}
@@ -253,7 +253,7 @@ func (cm *ContainerManager) GetStatus() (string, error) {
 		return "Container does not exist", nil
 	}
 
-	running, err := cm.docker.IsContainerRunning(cm.containerName)
+	running, err := cm.docker.isContainerRunning(cm.containerName)
 	if err != nil {
 		return "", err
 	}
@@ -265,8 +265,8 @@ func (cm *ContainerManager) GetStatus() (string, error) {
 	return "Container exists but is stopped", nil
 }
 
-// PullImage pulls a Docker image from a registry
-func (cm *ContainerManager) PullImage() error {
+// pullImage pulls a Docker image from a registry
+func (cm *containerManager) pullImage() error {
 	out, err := cm.docker.client.ImagePull(cm.docker.ctx, cm.imageName, image.PullOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to pull image: %w", err)

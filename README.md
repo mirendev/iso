@@ -11,8 +11,22 @@
 
 ## Installation
 
+### As a CLI Tool
+
 ```bash
-go build -o iso
+go build -o iso ./cmd/iso
+```
+
+Or install it:
+
+```bash
+go install miren.dev/iso/cmd/iso@latest
+```
+
+### As a Library
+
+```bash
+go get miren.dev/iso
 ```
 
 ## Usage
@@ -123,6 +137,8 @@ The tool will automatically mount your current directory to `/workspace` in the 
 
 ## Example Workflow
 
+### CLI Usage
+
 ```bash
 # Check status (nothing exists yet)
 ./iso status
@@ -141,6 +157,61 @@ The tool will automatically mount your current directory to `/workspace` in the 
 
 # Stop the container when done
 ./iso stop
+```
+
+### Library Usage
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+
+    "miren.dev/iso"
+)
+
+func main() {
+    // Create a new ISO client
+    client, err := iso.New(iso.Options{
+        DockerfilePath: "Dockerfile",
+        ImageName:      "my-test-env",
+        ContainerName:  "my-container",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer client.Close()
+
+    // Run a command
+    if err := client.Run([]string{"go", "test", "./..."}); err != nil {
+        log.Fatal(err)
+    }
+
+    // Check status
+    status, err := client.Status()
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Printf("Image exists: %v\n", status.ImageExists)
+    fmt.Printf("Container state: %s\n", status.ContainerState)
+}
+```
+
+## Project Structure
+
+```
+iso/
+├── iso.go              # Public API
+├── docker.go           # Docker client wrapper (internal)
+├── container.go        # Container management (internal)
+├── cmd/
+│   └── iso/
+│       └── main.go    # CLI implementation
+├── Dockerfile         # Example test environment
+├── go.mod
+└── README.md
 ```
 
 ## Requirements

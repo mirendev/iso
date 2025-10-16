@@ -1,5 +1,7 @@
 # Binaries
-iso
+/iso
+bin/iso
+cmd/iso/iso
 *.exe
 *.dll
 *.so

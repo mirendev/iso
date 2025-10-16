@@ -1,4 +1,4 @@
-package main
+package iso
 
 import (
 	"context"
@@ -14,32 +14,32 @@ import (
 	"github.com/docker/docker/pkg/archive"
 )
 
-// DockerClient wraps the Docker API client
-type DockerClient struct {
+// dockerClient wraps the Docker API client
+type dockerClient struct {
 	client *client.Client
 	ctx    context.Context
 }
 
-// NewDockerClient creates a new Docker client
-func NewDockerClient() (*DockerClient, error) {
+// newDockerClient creates a new Docker client
+func newDockerClient() (*dockerClient, error) {
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Docker client: %w", err)
 	}
 
-	return &DockerClient{
+	return &dockerClient{
 		client: cli,
 		ctx:    context.Background(),
 	}, nil
 }
 
-// Close closes the Docker client connection
-func (d *DockerClient) Close() error {
+// close closes the Docker client connection
+func (d *dockerClient) close() error {
 	return d.client.Close()
 }
 
-// BuildImage builds a Docker image from a Dockerfile
-func (d *DockerClient) BuildImage(dockerfilePath, imageName string) error {
+// buildImage builds a Docker image from a Dockerfile
+func (d *dockerClient) buildImage(dockerfilePath, imageName string) error {
 	// Get the directory containing the Dockerfile
 	buildContext := filepath.Dir(dockerfilePath)
 	if buildContext == "" {
@@ -76,8 +76,8 @@ func (d *DockerClient) BuildImage(dockerfilePath, imageName string) error {
 	return nil
 }
 
-// ImageExists checks if a Docker image exists
-func (d *DockerClient) ImageExists(imageName string) (bool, error) {
+// imageExists checks if a Docker image exists
+func (d *dockerClient) imageExists(imageName string) (bool, error) {
 	_, _, err := d.client.ImageInspectWithRaw(d.ctx, imageName)
 	if err != nil {
 		if client.IsErrNotFound(err) {
@@ -88,8 +88,8 @@ func (d *DockerClient) ImageExists(imageName string) (bool, error) {
 	return true, nil
 }
 
-// ContainerExists checks if a container exists
-func (d *DockerClient) ContainerExists(containerName string) (bool, error) {
+// containerExists checks if a container exists
+func (d *dockerClient) containerExists(containerName string) (bool, error) {
 	containers, err := d.client.ContainerList(d.ctx, container.ListOptions{
 		All: true,
 	})
@@ -108,8 +108,8 @@ func (d *DockerClient) ContainerExists(containerName string) (bool, error) {
 	return false, nil
 }
 
-// IsContainerRunning checks if a container is running
-func (d *DockerClient) IsContainerRunning(containerName string) (bool, error) {
+// isContainerRunning checks if a container is running
+func (d *dockerClient) isContainerRunning(containerName string) (bool, error) {
 	containers, err := d.client.ContainerList(d.ctx, container.ListOptions{
 		All: false, // Only running containers
 	})
@@ -127,8 +127,8 @@ func (d *DockerClient) IsContainerRunning(containerName string) (bool, error) {
 	return false, nil
 }
 
-// GetContainerID gets the container ID by name
-func (d *DockerClient) GetContainerID(containerName string) (string, error) {
+// getContainerID gets the container ID by name
+func (d *dockerClient) getContainerID(containerName string) (string, error) {
 	containers, err := d.client.ContainerList(d.ctx, container.ListOptions{
 		All: true,
 	})
@@ -146,8 +146,8 @@ func (d *DockerClient) GetContainerID(containerName string) (string, error) {
 	return "", fmt.Errorf("container not found: %s", containerName)
 }
 
-// RemoveImage removes a Docker image
-func (d *DockerClient) RemoveImage(imageName string) error {
+// removeImage removes a Docker image
+func (d *dockerClient) removeImage(imageName string) error {
 	_, err := d.client.ImageRemove(d.ctx, imageName, image.RemoveOptions{
 		Force: true,
 	})
