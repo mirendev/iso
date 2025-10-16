@@ -52,14 +52,23 @@ func run() error {
 func registerRunCommand(dispatcher *mflags.Dispatcher) {
 	fs := mflags.NewFlagSet("run")
 
+	// Dockerfile-based options
 	fs.String("dockerfile", 'f', defaultDockerfile, "Path to Dockerfile")
 	fs.String("image", 'i', defaultImageName, "Name of the Docker image")
 	fs.String("container", 'c', defaultContainerName, "Name of the container")
+
+	// Compose-based options
+	fs.String("compose", 'C', "", "Path to docker-compose.yml file")
+	fs.String("service", 's', "", "Service name in compose file")
+	fs.String("project", 'p', "", "Compose project name (defaults to directory name)")
 
 	// Allow unknown flags to pass through to the command
 	fs.AllowUnknownFlags(true)
 
 	handler := func(fs *mflags.FlagSet, args []string) error {
+		composePath := fs.Lookup("compose").Value.String()
+		serviceName := fs.Lookup("service").Value.String()
+		projectName := fs.Lookup("project").Value.String()
 		dockerfile := fs.Lookup("dockerfile").Value.String()
 		imageName := fs.Lookup("image").Value.String()
 		containerName := fs.Lookup("container").Value.String()
@@ -72,6 +81,9 @@ func registerRunCommand(dispatcher *mflags.Dispatcher) {
 			DockerfilePath: dockerfile,
 			ImageName:      imageName,
 			ContainerName:  containerName,
+			ComposePath:    composePath,
+			ServiceName:    serviceName,
+			ProjectName:    projectName,
 		})
 		if err != nil {
 			return err
@@ -101,12 +113,21 @@ func registerRunCommand(dispatcher *mflags.Dispatcher) {
 func registerBuildCommand(dispatcher *mflags.Dispatcher) {
 	fs := mflags.NewFlagSet("build")
 
+	// Dockerfile-based options
 	fs.String("dockerfile", 'f', defaultDockerfile, "Path to Dockerfile")
 	fs.String("image", 'i', defaultImageName, "Name of the Docker image")
 	fs.String("container", 'c', defaultContainerName, "Name of the container")
 	rebuild := fs.Bool("rebuild", 'r', false, "Force rebuild even if image exists")
 
+	// Compose-based options
+	fs.String("compose", 'C', "", "Path to docker-compose.yml file")
+	fs.String("service", 's', "", "Service name in compose file")
+	fs.String("project", 'p', "", "Compose project name (defaults to directory name)")
+
 	handler := func(fs *mflags.FlagSet, args []string) error {
+		composePath := fs.Lookup("compose").Value.String()
+		serviceName := fs.Lookup("service").Value.String()
+		projectName := fs.Lookup("project").Value.String()
 		dockerfile := fs.Lookup("dockerfile").Value.String()
 		imageName := fs.Lookup("image").Value.String()
 		containerName := fs.Lookup("container").Value.String()
@@ -116,6 +137,9 @@ func registerBuildCommand(dispatcher *mflags.Dispatcher) {
 			DockerfilePath: dockerfile,
 			ImageName:      imageName,
 			ContainerName:  containerName,
+			ComposePath:    composePath,
+			ServiceName:    serviceName,
+			ProjectName:    projectName,
 		})
 		if err != nil {
 			return err
@@ -139,11 +163,20 @@ func registerBuildCommand(dispatcher *mflags.Dispatcher) {
 func registerStopCommand(dispatcher *mflags.Dispatcher) {
 	fs := mflags.NewFlagSet("stop")
 
+	// Dockerfile-based options
 	fs.String("dockerfile", 'f', defaultDockerfile, "Path to Dockerfile")
 	fs.String("image", 'i', defaultImageName, "Name of the Docker image")
 	fs.String("container", 'c', defaultContainerName, "Name of the container")
 
+	// Compose-based options
+	fs.String("compose", 'C', "", "Path to docker-compose.yml file")
+	fs.String("service", 's', "", "Service name in compose file")
+	fs.String("project", 'p', "", "Compose project name (defaults to directory name)")
+
 	handler := func(fs *mflags.FlagSet, args []string) error {
+		composePath := fs.Lookup("compose").Value.String()
+		serviceName := fs.Lookup("service").Value.String()
+		projectName := fs.Lookup("project").Value.String()
 		dockerfile := fs.Lookup("dockerfile").Value.String()
 		imageName := fs.Lookup("image").Value.String()
 		containerName := fs.Lookup("container").Value.String()
@@ -152,6 +185,9 @@ func registerStopCommand(dispatcher *mflags.Dispatcher) {
 			DockerfilePath: dockerfile,
 			ImageName:      imageName,
 			ContainerName:  containerName,
+			ComposePath:    composePath,
+			ServiceName:    serviceName,
+			ProjectName:    projectName,
 		})
 		if err != nil {
 			return err
@@ -172,11 +208,20 @@ func registerStopCommand(dispatcher *mflags.Dispatcher) {
 func registerStatusCommand(dispatcher *mflags.Dispatcher) {
 	fs := mflags.NewFlagSet("status")
 
+	// Dockerfile-based options
 	fs.String("dockerfile", 'f', defaultDockerfile, "Path to Dockerfile")
 	fs.String("image", 'i', defaultImageName, "Name of the Docker image")
 	fs.String("container", 'c', defaultContainerName, "Name of the container")
 
+	// Compose-based options
+	fs.String("compose", 'C', "", "Path to docker-compose.yml file")
+	fs.String("service", 's', "", "Service name in compose file")
+	fs.String("project", 'p', "", "Compose project name (defaults to directory name)")
+
 	handler := func(fs *mflags.FlagSet, args []string) error {
+		composePath := fs.Lookup("compose").Value.String()
+		serviceName := fs.Lookup("service").Value.String()
+		projectName := fs.Lookup("project").Value.String()
 		dockerfile := fs.Lookup("dockerfile").Value.String()
 		imageName := fs.Lookup("image").Value.String()
 		containerName := fs.Lookup("container").Value.String()
@@ -185,6 +230,9 @@ func registerStatusCommand(dispatcher *mflags.Dispatcher) {
 			DockerfilePath: dockerfile,
 			ImageName:      imageName,
 			ContainerName:  containerName,
+			ComposePath:    composePath,
+			ServiceName:    serviceName,
+			ProjectName:    projectName,
 		})
 		if err != nil {
 			return err

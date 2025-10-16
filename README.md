@@ -4,10 +4,12 @@
 
 ## Features
 
+- **Docker Compose Support**: Use docker-compose files in addition to Dockerfiles
 - **Automatic Container Management**: Detects if a container is already running and reuses it
 - **Automatic Image Building**: Builds Docker images from Dockerfiles when needed
 - **Simple CLI Interface**: Uses `miren.dev/mflags` for command-line parsing
 - **Workspace Mounting**: Automatically mounts the current directory into the container at `/workspace`
+- **Exit Code Mirroring**: Mirrors container exit codes for proper CI/CD integration
 
 ## Installation
 
@@ -91,7 +93,31 @@ Stop and remove the container (image is preserved):
 
 ## Configuration
 
-### Flags
+### Using Docker Compose
+
+`iso` now supports docker-compose files as an alternative to Dockerfiles:
+
+```bash
+./iso run -C docker-compose.yml -s myservice go test ./...
+```
+
+When using compose mode:
+- `-C, --compose <path>`: Path to docker-compose.yml file
+- `-s, --service <name>`: Service name to run commands in (defaults to first service)
+- `-p, --project <name>`: Compose project name (defaults to directory name)
+
+Example docker-compose.yml:
+```yaml
+services:
+  test:
+    image: golang:1.23-alpine
+    command: /bin/sh -c "while true; do sleep 1000; done"
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+```
+
+### Using Dockerfile
 
 All commands support these flags:
 
@@ -135,7 +161,7 @@ The tool will automatically mount your current directory to `/workspace` in the 
 
 ## Example Workflow
 
-### CLI Usage
+### CLI Usage with Dockerfile
 
 ```bash
 # Check status (nothing exists yet)
@@ -157,7 +183,28 @@ The tool will automatically mount your current directory to `/workspace` in the 
 ./iso stop
 ```
 
+### CLI Usage with Docker Compose
+
+```bash
+# Check status (nothing exists yet)
+./iso status -C docker-compose.yml -s test
+
+# Run tests (starts compose stack, runs tests)
+./iso run -C docker-compose.yml -s test go test ./...
+
+# Run another command (reuses existing container)
+./iso run -C docker-compose.yml -s test go build
+
+# Check status (shows running container)
+./iso status -C docker-compose.yml -s test
+
+# Stop the compose stack when done
+./iso stop -C docker-compose.yml -s test
+```
+
 ### Library Usage
+
+#### Using Dockerfile
 
 ```go
 package main
@@ -170,7 +217,7 @@ import (
 )
 
 func main() {
-    // Create a new ISO client
+    // Create a new ISO client with Dockerfile
     client, err := iso.New(iso.Options{
         DockerfilePath: "Dockerfile",
         ImageName:      "my-test-env",
@@ -182,8 +229,12 @@ func main() {
     defer client.Close()
 
     // Run a command
-    if err := client.Run([]string{"go", "test", "./..."}); err != nil {
+    exitCode, err := client.Run([]string{"go", "test", "./..."})
+    if err != nil {
         log.Fatal(err)
+    }
+    if exitCode != 0 {
+        log.Fatalf("Command failed with exit code %d", exitCode)
     }
 
     // Check status
@@ -197,6 +248,50 @@ func main() {
 }
 ```
 
+#### Using Docker Compose
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+
+    "miren.dev/iso"
+)
+
+func main() {
+    // Create a new ISO client with docker-compose
+    client, err := iso.New(iso.Options{
+        ComposePath: "docker-compose.yml",
+        ServiceName: "test",
+        ProjectName: "myproject",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer client.Close()
+
+    // Run a command
+    exitCode, err := client.Run([]string{"go", "test", "./..."})
+    if err != nil {
+        log.Fatal(err)
+    }
+    if exitCode != 0 {
+        log.Fatalf("Command failed with exit code %d", exitCode)
+    }
+
+    // Check status
+    status, err := client.Status()
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Printf("Image: %s\n", status.ImageName)
+    fmt.Printf("Container state: %s\n", status.ContainerState)
+}
+```
+
 ## Project Structure
 
 ```
@@ -204,6 +299,7 @@ iso/
 ├── iso.go              # Public API
 ├── docker.go           # Docker client wrapper (internal)
 ├── container.go        # Container management (internal)
+├── compose.go          # Docker compose management (internal)
 ├── cmd/
 │   └── iso/
 │       └── main.go    # CLI implementation
@@ -223,3 +319,4 @@ iso/
 This tool uses:
 - `miren.dev/mflags` for CLI parsing
 - `github.com/docker/docker` for Docker API access
+- `github.com/compose-spec/compose-go` for Docker Compose file parsing

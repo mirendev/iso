@@ -19,3 +19,6 @@ go.work.sum
 
 # Dependency directories
 vendor/
+
+# Test files
+docker-compose.test.yml
