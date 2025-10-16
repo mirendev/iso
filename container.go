@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
@@ -57,10 +58,13 @@ func (cm *containerManager) ensureImage() error {
 
 // startContainer starts a new container
 func (cm *containerManager) startContainer() (string, error) {
-	// Get current working directory to mount
-	cwd, err := os.Getwd()
+	// Get the directory containing the Dockerfile
+	dockerfileDir := filepath.Dir(cm.dockerfilePath)
+
+	// Get absolute path of the Dockerfile directory
+	absPath, err := filepath.Abs(dockerfileDir)
 	if err != nil {
-		return "", fmt.Errorf("failed to get current directory: %w", err)
+		return "", fmt.Errorf("failed to get absolute path of Dockerfile directory: %w", err)
 	}
 
 	// Create container
@@ -73,7 +77,7 @@ func (cm *containerManager) startContainer() (string, error) {
 
 	hostConfig := &container.HostConfig{
 		Binds: []string{
-			fmt.Sprintf("%s:/workspace", cwd),
+			fmt.Sprintf("%s:/workspace", absPath),
 		},
 		AutoRemove: false,
 	}
@@ -144,12 +148,39 @@ func (cm *containerManager) runCommand(command []string) error {
 		}
 	}
 
+	// Calculate the working directory in the container
+	workDir := "/workspace"
+
+	// Get current working directory
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("failed to get current directory: %w", err)
+	}
+
+	// Get absolute path of Dockerfile directory
+	dockerfileDir := filepath.Dir(cm.dockerfilePath)
+	absDockerfileDir, err := filepath.Abs(dockerfileDir)
+	if err != nil {
+		return fmt.Errorf("failed to get absolute path of Dockerfile directory: %w", err)
+	}
+
+	// Calculate relative path from Dockerfile dir to current dir
+	relPath, err := filepath.Rel(absDockerfileDir, cwd)
+	if err != nil {
+		return fmt.Errorf("failed to calculate relative path: %w", err)
+	}
+
+	// If we're in a subdirectory, use that in the container
+	if relPath != "." && !filepath.IsAbs(relPath) && relPath != ".." && !filepath.HasPrefix(relPath, "..") {
+		workDir = filepath.Join("/workspace", relPath)
+	}
+
 	// Execute the command in the container
 	execConfig := container.ExecOptions{
 		Cmd:          command,
 		AttachStdout: true,
 		AttachStderr: true,
-		WorkingDir:   "/workspace",
+		WorkingDir:   workDir,
 	}
 
 	execResp, err := cm.docker.client.ContainerExecCreate(cm.docker.ctx, containerID, execConfig)
