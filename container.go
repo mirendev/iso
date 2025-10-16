@@ -13,9 +13,9 @@ import (
 
 // containerManager handles container lifecycle operations
 type containerManager struct {
-	docker        *dockerClient
-	imageName     string
-	containerName string
+	docker         *dockerClient
+	imageName      string
+	containerName  string
 	dockerfilePath string
 }
 
@@ -27,9 +27,9 @@ func newContainerManager(dockerfilePath, imageName, containerName string) (*cont
 	}
 
 	return &containerManager{
-		docker:        docker,
-		imageName:     imageName,
-		containerName: containerName,
+		docker:         docker,
+		imageName:      imageName,
+		containerName:  containerName,
 		dockerfilePath: dockerfilePath,
 	}, nil
 }
@@ -103,12 +103,12 @@ func (cm *containerManager) startContainer() (string, error) {
 	return resp.ID, nil
 }
 
-// runCommand runs a command in the container
-func (cm *containerManager) runCommand(command []string) error {
+// runCommand runs a command in the container and returns the exit code
+func (cm *containerManager) runCommand(command []string) (int, error) {
 	// Check if container is already running
 	running, err := cm.docker.isContainerRunning(cm.containerName)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	var containerID string
@@ -116,36 +116,36 @@ func (cm *containerManager) runCommand(command []string) error {
 		// Check if container exists but is stopped
 		exists, err := cm.docker.containerExists(cm.containerName)
 		if err != nil {
-			return err
+			return 0, err
 		}
 
 		if exists {
 			// Get container ID and start it
 			containerID, err = cm.docker.getContainerID(cm.containerName)
 			if err != nil {
-				return err
+				return 0, err
 			}
 			fmt.Printf("Starting existing container %s...\n", cm.containerName)
 			if err := cm.docker.client.ContainerStart(cm.docker.ctx, containerID, container.StartOptions{}); err != nil {
-				return fmt.Errorf("failed to start container: %w", err)
+				return 0, fmt.Errorf("failed to start container: %w", err)
 			}
 		} else {
 			// Ensure image exists
 			if err := cm.ensureImage(); err != nil {
-				return err
+				return 0, err
 			}
 
 			// Start a new container
 			fmt.Printf("Starting new container %s...\n", cm.containerName)
 			containerID, err = cm.startContainer()
 			if err != nil {
-				return err
+				return 0, err
 			}
 		}
 	} else {
 		containerID, err = cm.docker.getContainerID(cm.containerName)
 		if err != nil {
-			return err
+			return 0, err
 		}
 	}
 
@@ -155,20 +155,20 @@ func (cm *containerManager) runCommand(command []string) error {
 	// Get current working directory
 	cwd, err := os.Getwd()
 	if err != nil {
-		return fmt.Errorf("failed to get current directory: %w", err)
+		return 0, fmt.Errorf("failed to get current directory: %w", err)
 	}
 
 	// Get absolute path of Dockerfile directory
 	dockerfileDir := filepath.Dir(cm.dockerfilePath)
 	absDockerfileDir, err := filepath.Abs(dockerfileDir)
 	if err != nil {
-		return fmt.Errorf("failed to get absolute path of Dockerfile directory: %w", err)
+		return 0, fmt.Errorf("failed to get absolute path of Dockerfile directory: %w", err)
 	}
 
 	// Calculate relative path from Dockerfile dir to current dir
 	relPath, err := filepath.Rel(absDockerfileDir, cwd)
 	if err != nil {
-		return fmt.Errorf("failed to calculate relative path: %w", err)
+		return 0, fmt.Errorf("failed to calculate relative path: %w", err)
 	}
 
 	// If we're in a subdirectory, use that in the container
@@ -191,7 +191,7 @@ func (cm *containerManager) runCommand(command []string) error {
 
 	execResp, err := cm.docker.client.ContainerExecCreate(cm.docker.ctx, containerID, execConfig)
 	if err != nil {
-		return fmt.Errorf("failed to create exec: %w", err)
+		return 0, fmt.Errorf("failed to create exec: %w", err)
 	}
 
 	// Attach to the exec instance
@@ -199,52 +199,50 @@ func (cm *containerManager) runCommand(command []string) error {
 		Tty: isTTY,
 	})
 	if err != nil {
-		return fmt.Errorf("failed to attach to exec: %w", err)
+		return 0, fmt.Errorf("failed to attach to exec: %w", err)
 	}
 	defer attachResp.Close()
 
-	// Handle stdin/stdout based on TTY mode
-	if isTTY {
-		// TTY mode: use bidirectional connection
-		go func() {
-			_, _ = io.Copy(attachResp.Conn, os.Stdin)
-			// Close write side when stdin closes
-			if closer, ok := attachResp.Conn.(interface{ CloseWrite() error }); ok {
-				closer.CloseWrite()
-			}
-		}()
+	// Copy stdin in background
+	go func() {
+		_, _ = io.Copy(attachResp.Conn, os.Stdin)
+		// Close write side when stdin closes to propagate EOF
+		if closer, ok := attachResp.Conn.(interface{ CloseWrite() error }); ok {
+			closer.CloseWrite()
+		}
+	}()
 
-		// Copy output from container
-		_, err = io.Copy(os.Stdout, attachResp.Conn)
-	} else {
-		// Non-TTY mode: forward stdin and read output
-		go func() {
-			_, _ = io.Copy(attachResp.Conn, os.Stdin)
-			// Close write side when stdin closes to propagate EOF
-			if closer, ok := attachResp.Conn.(interface{ CloseWrite() error }); ok {
-				closer.CloseWrite()
-			}
-		}()
+	// Copy stdout/stderr in background based on TTY mode
+	outputDone := make(chan error, 1)
+	go func() {
+		var err error
+		if isTTY {
+			// TTY mode: use bidirectional connection
+			_, err = io.Copy(os.Stdout, attachResp.Conn)
+		} else {
+			// Non-TTY mode: use reader for output
+			_, err = io.Copy(os.Stdout, attachResp.Reader)
+		}
+		outputDone <- err
+	}()
 
-		// Copy output from container
-		_, err = io.Copy(os.Stdout, attachResp.Reader)
-	}
-
-	if err != nil && err != io.EOF {
-		return fmt.Errorf("failed to read output: %w", err)
+	// Wait for either output to finish or context to be done
+	select {
+	case err := <-outputDone:
+		if err != nil && err != io.EOF {
+			return 0, fmt.Errorf("failed to read output: %w", err)
+		}
+	case <-cm.docker.ctx.Done():
+		return 0, cm.docker.ctx.Err()
 	}
 
 	// Check exit code
 	inspectResp, err := cm.docker.client.ContainerExecInspect(cm.docker.ctx, execResp.ID)
 	if err != nil {
-		return fmt.Errorf("failed to inspect exec: %w", err)
+		return 0, fmt.Errorf("failed to inspect exec: %w", err)
 	}
 
-	if inspectResp.ExitCode != 0 {
-		return fmt.Errorf("command exited with code %d", inspectResp.ExitCode)
-	}
-
-	return nil
+	return inspectResp.ExitCode, nil
 }
 
 // stopContainer stops and removes the container

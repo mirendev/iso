@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -14,8 +15,21 @@ const (
 	defaultContainerName = "iso-test-container"
 )
 
+// ExitError carries an exit code
+type ExitError struct {
+	Code int
+}
+
+func (e *ExitError) Error() string {
+	return fmt.Sprintf("exit code %d", e.Code)
+}
+
 func main() {
 	if err := run(); err != nil {
+		var exitErr *ExitError
+		if errors.As(err, &exitErr) {
+			os.Exit(exitErr.Code)
+		}
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
@@ -57,7 +71,16 @@ func registerRunCommand(dispatcher *mflags.Dispatcher) {
 		}
 		defer client.Close()
 
-		return client.Run(args)
+		exitCode, err := client.Run(args)
+		if err != nil {
+			return err
+		}
+
+		if exitCode != 0 {
+			return &ExitError{Code: exitCode}
+		}
+
+		return nil
 	}
 
 	cmd := mflags.NewCommand(fs, handler,

@@ -51,15 +51,15 @@ func (c *Client) Close() error {
 	return c.containerManager.close()
 }
 
-// Run executes a command in the isolated environment
-func (c *Client) Run(command []string) error {
+// Run executes a command in the isolated environment and returns the exit code
+func (c *Client) Run(command []string) (int, error) {
 	if len(command) == 0 {
-		return fmt.Errorf("no command specified")
+		return 0, fmt.Errorf("no command specified")
 	}
 
 	// Check if Dockerfile exists
 	if _, err := os.Stat(c.opts.DockerfilePath); os.IsNotExist(err) {
-		return fmt.Errorf("Dockerfile not found: %s", c.opts.DockerfilePath)
+		return 0, fmt.Errorf("Dockerfile not found: %s", c.opts.DockerfilePath)
 	}
 
 	return c.containerManager.runCommand(command)
