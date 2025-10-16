@@ -184,7 +184,7 @@ func (cm *containerManager) runCommand(command []string) error {
 		Cmd:          command,
 		AttachStdout: true,
 		AttachStderr: true,
-		AttachStdin:  isTTY,
+		AttachStdin:  true, // Always attach stdin
 		Tty:          isTTY,
 		WorkingDir:   workDir,
 	}
@@ -203,17 +203,30 @@ func (cm *containerManager) runCommand(command []string) error {
 	}
 	defer attachResp.Close()
 
-	// If TTY, we need to handle stdin/stdout differently
+	// Handle stdin/stdout based on TTY mode
 	if isTTY {
-		// Copy stdin to container
+		// TTY mode: use bidirectional connection
 		go func() {
 			_, _ = io.Copy(attachResp.Conn, os.Stdin)
+			// Close write side when stdin closes
+			if closer, ok := attachResp.Conn.(interface{ CloseWrite() error }); ok {
+				closer.CloseWrite()
+			}
 		}()
 
 		// Copy output from container
 		_, err = io.Copy(os.Stdout, attachResp.Conn)
 	} else {
-		// Non-TTY: just copy output
+		// Non-TTY mode: forward stdin and read output
+		go func() {
+			_, _ = io.Copy(attachResp.Conn, os.Stdin)
+			// Close write side when stdin closes to propagate EOF
+			if closer, ok := attachResp.Conn.(interface{ CloseWrite() error }); ok {
+				closer.CloseWrite()
+			}
+		}()
+
+		// Copy output from container
 		_, err = io.Copy(os.Stdout, attachResp.Reader)
 	}
 
