@@ -8,6 +8,7 @@ import (
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
+	"github.com/moby/term"
 )
 
 // containerManager handles container lifecycle operations
@@ -175,11 +176,16 @@ func (cm *containerManager) runCommand(command []string) error {
 		workDir = filepath.Join("/workspace", relPath)
 	}
 
+	// Check if stdin is a TTY
+	isTTY := term.IsTerminal(os.Stdin.Fd())
+
 	// Execute the command in the container
 	execConfig := container.ExecOptions{
 		Cmd:          command,
 		AttachStdout: true,
 		AttachStderr: true,
+		AttachStdin:  isTTY,
+		Tty:          isTTY,
 		WorkingDir:   workDir,
 	}
 
@@ -189,14 +195,28 @@ func (cm *containerManager) runCommand(command []string) error {
 	}
 
 	// Attach to the exec instance
-	attachResp, err := cm.docker.client.ContainerExecAttach(cm.docker.ctx, execResp.ID, container.ExecStartOptions{})
+	attachResp, err := cm.docker.client.ContainerExecAttach(cm.docker.ctx, execResp.ID, container.ExecStartOptions{
+		Tty: isTTY,
+	})
 	if err != nil {
 		return fmt.Errorf("failed to attach to exec: %w", err)
 	}
 	defer attachResp.Close()
 
-	// Stream output
-	_, err = io.Copy(os.Stdout, attachResp.Reader)
+	// If TTY, we need to handle stdin/stdout differently
+	if isTTY {
+		// Copy stdin to container
+		go func() {
+			_, _ = io.Copy(attachResp.Conn, os.Stdin)
+		}()
+
+		// Copy output from container
+		_, err = io.Copy(os.Stdout, attachResp.Conn)
+	} else {
+		// Non-TTY: just copy output
+		_, err = io.Copy(os.Stdout, attachResp.Reader)
+	}
+
 	if err != nil && err != io.EOF {
 		return fmt.Errorf("failed to read output: %w", err)
 	}
