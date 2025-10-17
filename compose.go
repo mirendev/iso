@@ -151,8 +151,8 @@ func (cm *composeManager) runCommand(command []string) (int, error) {
 
 	var containerID string
 	if !running {
-		// Start the compose stack
-		if err := cm.startStack(); err != nil {
+		// Start the compose stack (silently)
+		if err := cm.startStack(false); err != nil {
 			return 0, err
 		}
 
@@ -258,13 +258,29 @@ func (cm *composeManager) runCommand(command []string) (int, error) {
 }
 
 // startStack starts the compose stack
-func (cm *composeManager) startStack() error {
-	fmt.Printf("Starting compose stack %s...\n", cm.projectName)
+// If verbose is true, output is shown to stdout/stderr in addition to being logged
+func (cm *composeManager) startStack(verbose bool) error {
+	// Create log file for startup output
+	composeDir := filepath.Dir(cm.composePath)
+	logPath := filepath.Join(composeDir, "startup.log")
+	logFile, err := os.Create(logPath)
+	if err != nil {
+		return fmt.Errorf("failed to create startup log: %w", err)
+	}
+	defer logFile.Close()
 
 	ctx := context.Background()
 	cmd := exec.CommandContext(ctx, "docker", "compose", "-f", cm.composePath, "-p", cm.projectName, "up", "-d")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+
+	if verbose {
+		// Write to both log file and stdout/stderr
+		cmd.Stdout = io.MultiWriter(logFile, os.Stdout)
+		cmd.Stderr = io.MultiWriter(logFile, os.Stderr)
+	} else {
+		// Write only to log file
+		cmd.Stdout = logFile
+		cmd.Stderr = logFile
+	}
 
 	if err := setupComposeEnv(cmd); err != nil {
 		return err
@@ -274,7 +290,6 @@ func (cm *composeManager) startStack() error {
 		return fmt.Errorf("failed to start compose stack: %w", err)
 	}
 
-	fmt.Printf("Compose stack %s started\n", cm.projectName)
 	return nil
 }
 

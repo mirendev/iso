@@ -44,6 +44,7 @@ func run() error {
 	// Register commands
 	registerRunCommand(dispatcher)
 	registerBuildCommand(dispatcher)
+	registerStartCommand(dispatcher)
 	registerStopCommand(dispatcher)
 	registerStatusCommand(dispatcher)
 	registerInitCommand(dispatcher)
@@ -139,6 +140,40 @@ func registerBuildCommand(dispatcher *mflags.Dispatcher) {
 	)
 
 	dispatcher.Dispatch("build", cmd)
+}
+
+// registerStartCommand registers the 'start' command
+func registerStartCommand(dispatcher *mflags.Dispatcher) {
+	fs := mflags.NewFlagSet("start")
+
+	// Dockerfile-based options
+	fs.String("dockerfile", 'f', defaultDockerfile, "Path to Dockerfile")
+	fs.String("image", 'i', defaultImageName, "Name of the Docker image")
+	fs.String("container", 'c', defaultContainerName, "Name of the container")
+
+	handler := func(fs *mflags.FlagSet, args []string) error {
+		dockerfile := fs.Lookup("dockerfile").Value.String()
+		imageName := fs.Lookup("image").Value.String()
+		containerName := fs.Lookup("container").Value.String()
+
+		client, err := iso.New(iso.Options{
+			DockerfilePath: dockerfile,
+			ImageName:      imageName,
+			ContainerName:  containerName,
+		})
+		if err != nil {
+			return err
+		}
+		defer client.Close()
+
+		return client.Start()
+	}
+
+	cmd := mflags.NewCommand(fs, handler,
+		mflags.WithUsage("Start the compose stack and show all startup output"),
+	)
+
+	dispatcher.Dispatch("start", cmd)
 }
 
 // registerStopCommand registers the 'stop' command

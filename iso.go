@@ -144,6 +144,14 @@ func (c *Client) Run(command []string) (int, error) {
 	return c.containerManager.runCommand(command)
 }
 
+// Start starts the compose stack and shows all startup output
+func (c *Client) Start() error {
+	if c.useCompose {
+		return c.composeManager.startStack(true)
+	}
+	return fmt.Errorf("start command only works with compose mode")
+}
+
 // Build ensures the Docker image exists, building it if necessary
 func (c *Client) Build() error {
 	if c.useCompose {
