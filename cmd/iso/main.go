@@ -4,6 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"miren.dev/iso"
 	"miren.dev/mflags"
@@ -43,6 +46,7 @@ func run() error {
 	registerBuildCommand(dispatcher)
 	registerStopCommand(dispatcher)
 	registerStatusCommand(dispatcher)
+	registerInitCommand(dispatcher)
 
 	// Execute the dispatcher
 	return dispatcher.Execute(os.Args[1:])
@@ -57,18 +61,10 @@ func registerRunCommand(dispatcher *mflags.Dispatcher) {
 	fs.String("image", 'i', defaultImageName, "Name of the Docker image")
 	fs.String("container", 'c', defaultContainerName, "Name of the container")
 
-	// Compose-based options
-	fs.String("compose", 'C', "", "Path to docker-compose.yml file")
-	fs.String("service", 's', "", "Service name in compose file")
-	fs.String("project", 'p', "", "Compose project name (defaults to directory name)")
-
 	// Allow unknown flags to pass through to the command
 	fs.AllowUnknownFlags(true)
 
 	handler := func(fs *mflags.FlagSet, args []string) error {
-		composePath := fs.Lookup("compose").Value.String()
-		serviceName := fs.Lookup("service").Value.String()
-		projectName := fs.Lookup("project").Value.String()
 		dockerfile := fs.Lookup("dockerfile").Value.String()
 		imageName := fs.Lookup("image").Value.String()
 		containerName := fs.Lookup("container").Value.String()
@@ -81,9 +77,6 @@ func registerRunCommand(dispatcher *mflags.Dispatcher) {
 			DockerfilePath: dockerfile,
 			ImageName:      imageName,
 			ContainerName:  containerName,
-			ComposePath:    composePath,
-			ServiceName:    serviceName,
-			ProjectName:    projectName,
 		})
 		if err != nil {
 			return err
@@ -119,15 +112,7 @@ func registerBuildCommand(dispatcher *mflags.Dispatcher) {
 	fs.String("container", 'c', defaultContainerName, "Name of the container")
 	rebuild := fs.Bool("rebuild", 'r', false, "Force rebuild even if image exists")
 
-	// Compose-based options
-	fs.String("compose", 'C', "", "Path to docker-compose.yml file")
-	fs.String("service", 's', "", "Service name in compose file")
-	fs.String("project", 'p', "", "Compose project name (defaults to directory name)")
-
 	handler := func(fs *mflags.FlagSet, args []string) error {
-		composePath := fs.Lookup("compose").Value.String()
-		serviceName := fs.Lookup("service").Value.String()
-		projectName := fs.Lookup("project").Value.String()
 		dockerfile := fs.Lookup("dockerfile").Value.String()
 		imageName := fs.Lookup("image").Value.String()
 		containerName := fs.Lookup("container").Value.String()
@@ -137,9 +122,6 @@ func registerBuildCommand(dispatcher *mflags.Dispatcher) {
 			DockerfilePath: dockerfile,
 			ImageName:      imageName,
 			ContainerName:  containerName,
-			ComposePath:    composePath,
-			ServiceName:    serviceName,
-			ProjectName:    projectName,
 		})
 		if err != nil {
 			return err
@@ -168,15 +150,7 @@ func registerStopCommand(dispatcher *mflags.Dispatcher) {
 	fs.String("image", 'i', defaultImageName, "Name of the Docker image")
 	fs.String("container", 'c', defaultContainerName, "Name of the container")
 
-	// Compose-based options
-	fs.String("compose", 'C', "", "Path to docker-compose.yml file")
-	fs.String("service", 's', "", "Service name in compose file")
-	fs.String("project", 'p', "", "Compose project name (defaults to directory name)")
-
 	handler := func(fs *mflags.FlagSet, args []string) error {
-		composePath := fs.Lookup("compose").Value.String()
-		serviceName := fs.Lookup("service").Value.String()
-		projectName := fs.Lookup("project").Value.String()
 		dockerfile := fs.Lookup("dockerfile").Value.String()
 		imageName := fs.Lookup("image").Value.String()
 		containerName := fs.Lookup("container").Value.String()
@@ -185,9 +159,6 @@ func registerStopCommand(dispatcher *mflags.Dispatcher) {
 			DockerfilePath: dockerfile,
 			ImageName:      imageName,
 			ContainerName:  containerName,
-			ComposePath:    composePath,
-			ServiceName:    serviceName,
-			ProjectName:    projectName,
 		})
 		if err != nil {
 			return err
@@ -213,15 +184,7 @@ func registerStatusCommand(dispatcher *mflags.Dispatcher) {
 	fs.String("image", 'i', defaultImageName, "Name of the Docker image")
 	fs.String("container", 'c', defaultContainerName, "Name of the container")
 
-	// Compose-based options
-	fs.String("compose", 'C', "", "Path to docker-compose.yml file")
-	fs.String("service", 's', "", "Service name in compose file")
-	fs.String("project", 'p', "", "Compose project name (defaults to directory name)")
-
 	handler := func(fs *mflags.FlagSet, args []string) error {
-		composePath := fs.Lookup("compose").Value.String()
-		serviceName := fs.Lookup("service").Value.String()
-		projectName := fs.Lookup("project").Value.String()
 		dockerfile := fs.Lookup("dockerfile").Value.String()
 		imageName := fs.Lookup("image").Value.String()
 		containerName := fs.Lookup("container").Value.String()
@@ -230,9 +193,6 @@ func registerStatusCommand(dispatcher *mflags.Dispatcher) {
 			DockerfilePath: dockerfile,
 			ImageName:      imageName,
 			ContainerName:  containerName,
-			ComposePath:    composePath,
-			ServiceName:    serviceName,
-			ProjectName:    projectName,
 		})
 		if err != nil {
 			return err
@@ -262,4 +222,37 @@ func registerStatusCommand(dispatcher *mflags.Dispatcher) {
 	)
 
 	dispatcher.Dispatch("status", cmd)
+}
+
+// registerInitCommand registers the 'init' command
+func registerInitCommand(dispatcher *mflags.Dispatcher) {
+	fs := mflags.NewFlagSet("init")
+
+	handler := func(fs *mflags.FlagSet, args []string) error {
+		// Set up signal handling
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT)
+
+		fmt.Println("ISO init process started. Waiting for signals...")
+
+		// Sleep loop
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case sig := <-sigChan:
+				fmt.Printf("Received signal %v, exiting...\n", sig)
+				return nil
+			case <-ticker.C:
+				// Continue sleeping
+			}
+		}
+	}
+
+	cmd := mflags.NewCommand(fs, handler,
+		mflags.WithUsage("Run as init process in container (sleep loop with signal handling)"),
+	)
+
+	dispatcher.Dispatch("init", cmd)
 }

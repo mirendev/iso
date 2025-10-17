@@ -1,0 +1,10 @@
+services:
+  testbuild:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command: ["/iso", "init"]
+    volumes:
+      - ..:/workspace
+      - $ISO:/iso
+    working_dir: /workspace

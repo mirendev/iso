@@ -8,8 +8,8 @@ import (
 	"os/exec"
 	"path/filepath"
 
-	"github.com/compose-spec/compose-go/loader"
-	"github.com/compose-spec/compose-go/types"
+	"github.com/compose-spec/compose-go/v2/cli"
+	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/moby/term"
 )
@@ -23,6 +23,39 @@ type composeManager struct {
 	project     *types.Project
 }
 
+// getIsoBinaryPath returns the absolute path to the currently running iso binary
+func getIsoBinaryPath() (string, error) {
+	execPath, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("failed to get executable path: %w", err)
+	}
+
+	absPath, err := filepath.Abs(execPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to get absolute path: %w", err)
+	}
+
+	// Resolve symlinks
+	realPath, err := filepath.EvalSymlinks(absPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve symlinks: %w", err)
+	}
+
+	return realPath, nil
+}
+
+// setupComposeEnv sets up environment variables for docker compose commands
+func setupComposeEnv(cmd *exec.Cmd) error {
+	isoPath, err := getIsoBinaryPath()
+	if err != nil {
+		return err
+	}
+
+	// Copy current environment and add ISO variable
+	cmd.Env = append(os.Environ(), fmt.Sprintf("ISO=%s", isoPath))
+	return nil
+}
+
 // newComposeManager creates a new compose manager
 func newComposeManager(composePath, projectName, serviceName string) (*composeManager, error) {
 	docker, err := newDockerClient()
@@ -30,58 +63,62 @@ func newComposeManager(composePath, projectName, serviceName string) (*composeMa
 		return nil, err
 	}
 
+	// Set ISO environment variable for compose file parsing
+	isoPath, err := getIsoBinaryPath()
+	if err != nil {
+		return nil, err
+	}
+	os.Setenv("ISO", isoPath)
+
 	// Load and parse the compose file
 	absPath, err := filepath.Abs(composePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get absolute path of compose file: %w", err)
 	}
 
-	// Read the compose file
-	composeData, err := os.ReadFile(absPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read compose file: %w", err)
-	}
-
-	// Set up loader config
-	workingDir := filepath.Dir(absPath)
+	// Set up project name
 	if projectName == "" {
+		workingDir := filepath.Dir(absPath)
 		projectName = filepath.Base(workingDir)
 	}
 
-	configFiles := []types.ConfigFile{
-		{
-			Filename: absPath,
-			Content:  composeData,
-		},
+	// Create project options
+	ctx := context.Background()
+	options, err := cli.NewProjectOptions(
+		[]string{absPath},
+		cli.WithOsEnv,
+		cli.WithDotEnv,
+		cli.WithName(projectName),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create project options: %w", err)
 	}
 
-	// Parse the compose file
-	project, err := loader.Load(types.ConfigDetails{
-		WorkingDir:  workingDir,
-		ConfigFiles: configFiles,
-		Environment: nil,
-	}, func(options *loader.Options) {
-		options.SetProjectName(projectName, true)
-	})
+	// Load the project
+	project, err := options.LoadProject(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load compose file: %w", err)
 	}
 
-	// Validate that the service exists
+	// Validate that the service exists or select default
 	if serviceName != "" {
-		found := false
-		for _, service := range project.Services {
-			if service.Name == serviceName {
-				found = true
-				break
-			}
-		}
-		if !found {
+		// Check if specified service exists
+		if _, found := project.Services[serviceName]; !found {
 			return nil, fmt.Errorf("service %q not found in compose file", serviceName)
 		}
-	} else if len(project.Services) > 0 {
-		// Default to first service
-		serviceName = project.Services[0].Name
+	} else {
+		// No service specified - look for "shell" service first
+		if _, found := project.Services["shell"]; found {
+			serviceName = "shell"
+		} else if len(project.Services) > 0 {
+			// If no "shell" service, pick the first one
+			for name := range project.Services {
+				serviceName = name
+				break
+			}
+		} else {
+			return nil, fmt.Errorf("no services found in compose file")
+		}
 	}
 
 	return &composeManager{
@@ -138,13 +175,15 @@ func (cm *composeManager) runCommand(command []string) (int, error) {
 		return 0, fmt.Errorf("failed to get current directory: %w", err)
 	}
 
-	composeDir := filepath.Dir(cm.composePath)
-	absComposeDir, err := filepath.Abs(composeDir)
+	// Get the project root (parent of .iso directory)
+	composeDir := filepath.Dir(cm.composePath)       // .iso directory
+	projectRoot := filepath.Dir(composeDir)          // parent of .iso
+	absProjectRoot, err := filepath.Abs(projectRoot)
 	if err != nil {
-		return 0, fmt.Errorf("failed to get absolute path of compose directory: %w", err)
+		return 0, fmt.Errorf("failed to get absolute path of project root: %w", err)
 	}
 
-	relPath, err := filepath.Rel(absComposeDir, cwd)
+	relPath, err := filepath.Rel(absProjectRoot, cwd)
 	if err != nil {
 		return 0, fmt.Errorf("failed to calculate relative path: %w", err)
 	}
@@ -222,15 +261,14 @@ func (cm *composeManager) runCommand(command []string) (int, error) {
 func (cm *composeManager) startStack() error {
 	fmt.Printf("Starting compose stack %s...\n", cm.projectName)
 
-	// Start services using docker compose up
-	// We'll use docker compose CLI via exec for now
 	ctx := context.Background()
-	composeCmd := []string{"docker", "compose", "-f", cm.composePath, "-p", cm.projectName, "up", "-d"}
-
-	// Execute docker compose up
-	cmd := execCommand(ctx, composeCmd[0], composeCmd[1:]...)
+	cmd := exec.CommandContext(ctx, "docker", "compose", "-f", cm.composePath, "-p", cm.projectName, "up", "-d")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+
+	if err := setupComposeEnv(cmd); err != nil {
+		return err
+	}
 
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to start compose stack: %w", err)
@@ -245,17 +283,61 @@ func (cm *composeManager) stopStack() error {
 	fmt.Printf("Stopping compose stack %s...\n", cm.projectName)
 
 	ctx := context.Background()
-	composeCmd := []string{"docker", "compose", "-f", cm.composePath, "-p", cm.projectName, "down"}
-
-	cmd := execCommand(ctx, composeCmd[0], composeCmd[1:]...)
+	cmd := exec.CommandContext(ctx, "docker", "compose", "-f", cm.composePath, "-p", cm.projectName, "down", "-t", "3")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+
+	if err := setupComposeEnv(cmd); err != nil {
+		return err
+	}
 
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to stop compose stack: %w", err)
 	}
 
 	fmt.Printf("Compose stack %s stopped\n", cm.projectName)
+	return nil
+}
+
+// buildStack builds the compose stack images
+func (cm *composeManager) buildStack() error {
+	fmt.Printf("Building compose stack %s...\n", cm.projectName)
+
+	ctx := context.Background()
+	cmd := exec.CommandContext(ctx, "docker", "compose", "-f", cm.composePath, "-p", cm.projectName, "build")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := setupComposeEnv(cmd); err != nil {
+		return err
+	}
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to build compose stack: %w", err)
+	}
+
+	fmt.Printf("Compose stack %s built\n", cm.projectName)
+	return nil
+}
+
+// rebuildStack rebuilds the compose stack images without cache
+func (cm *composeManager) rebuildStack() error {
+	fmt.Printf("Rebuilding compose stack %s (no cache)...\n", cm.projectName)
+
+	ctx := context.Background()
+	cmd := exec.CommandContext(ctx, "docker", "compose", "-f", cm.composePath, "-p", cm.projectName, "build", "--no-cache")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := setupComposeEnv(cmd); err != nil {
+		return err
+	}
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to rebuild compose stack: %w", err)
+	}
+
+	fmt.Printf("Compose stack %s rebuilt\n", cm.projectName)
 	return nil
 }
 
@@ -280,9 +362,4 @@ func (cm *composeManager) getStatus() (string, error) {
 		return "running", nil
 	}
 	return "stopped", nil
-}
-
-// execCommand is a helper to create exec.CommandContext
-func execCommand(ctx context.Context, name string, args ...string) *exec.Cmd {
-	return exec.CommandContext(ctx, name, args...)
 }

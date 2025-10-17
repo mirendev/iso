@@ -31,22 +31,63 @@ type Client struct {
 	useCompose       bool
 }
 
+// findIsoDir searches upward from the current directory to find .iso directory
+// Returns the path to .iso/docker-compose.yml and the project root directory
+func findIsoDir() (composePath string, projectRoot string, found bool) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", "", false
+	}
+
+	dir := cwd
+	for {
+		isoDir := filepath.Join(dir, ".iso")
+		composeFile := filepath.Join(isoDir, "docker-compose.yml")
+
+		if _, err := os.Stat(composeFile); err == nil {
+			return composeFile, dir, true
+		}
+
+		// Move up one directory
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			// Reached root directory
+			break
+		}
+		dir = parent
+	}
+
+	return "", "", false
+}
+
 // New creates a new ISO client with the given options
 func New(opts Options) (*Client, error) {
 	client := &Client{opts: opts}
+
+	// Auto-detect compose mode by searching upward for .iso/docker-compose.yml
+	if opts.ComposePath == "" {
+		if composePath, projectRoot, found := findIsoDir(); found {
+			opts.ComposePath = composePath
+			if opts.ProjectName == "" {
+				opts.ProjectName = filepath.Base(projectRoot)
+			}
+		}
+	}
 
 	// Determine if using compose or dockerfile
 	if opts.ComposePath != "" {
 		// Using docker compose
 		client.useCompose = true
 
-		// Set default project name
+		// Set default project name from compose file directory if not set
 		if opts.ProjectName == "" {
 			absPath, err := filepath.Abs(opts.ComposePath)
 			if err != nil {
 				return nil, fmt.Errorf("failed to get absolute path: %w", err)
 			}
-			opts.ProjectName = filepath.Base(filepath.Dir(absPath))
+			// Project name is the directory containing .iso
+			projectRoot := filepath.Dir(filepath.Dir(absPath))
+			opts.ProjectName = filepath.Base(projectRoot)
 		}
 
 		cm, err := newComposeManager(opts.ComposePath, opts.ProjectName, opts.ServiceName)
@@ -106,7 +147,7 @@ func (c *Client) Run(command []string) (int, error) {
 // Build ensures the Docker image exists, building it if necessary
 func (c *Client) Build() error {
 	if c.useCompose {
-		return fmt.Errorf("build command not supported in compose mode (use docker compose build)")
+		return c.composeManager.buildStack()
 	}
 
 	// Check if Dockerfile exists
@@ -120,7 +161,7 @@ func (c *Client) Build() error {
 // Rebuild forces a rebuild of the Docker image
 func (c *Client) Rebuild() error {
 	if c.useCompose {
-		return fmt.Errorf("rebuild command not supported in compose mode (use docker compose build --no-cache)")
+		return c.composeManager.rebuildStack()
 	}
 
 	// Check if Dockerfile exists
