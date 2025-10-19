@@ -1,6 +1,7 @@
 package main
 
 import (
+	_ "embed"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -13,6 +14,9 @@ import (
 	"miren.dev/mflags"
 	"miren.dev/trifle"
 )
+
+//go:embed agent-help.md
+var agentHelpContent string
 
 // ExitError carries an exit code
 type ExitError struct {
@@ -49,6 +53,7 @@ func run() error {
 	registerStopCommand(dispatcher)
 	registerStatusCommand(dispatcher)
 	registerInitCommand(dispatcher)
+	registerAgentHelpCommand(dispatcher)
 
 	// Execute the dispatcher
 	return dispatcher.Execute(os.Args[1:])
@@ -226,4 +231,20 @@ func registerInitCommand(dispatcher *mflags.Dispatcher) {
 	)
 
 	dispatcher.Dispatch("init", cmd)
+}
+
+// registerAgentHelpCommand registers the 'agent-help' command
+func registerAgentHelpCommand(dispatcher *mflags.Dispatcher) {
+	fs := mflags.NewFlagSet("agent-help")
+
+	handler := func(fs *mflags.FlagSet, args []string) error {
+		fmt.Print(agentHelpContent)
+		return nil
+	}
+
+	cmd := mflags.NewCommand(fs, handler,
+		mflags.WithUsage("Output markdown documentation for AI agents"),
+	)
+
+	dispatcher.Dispatch("agent-help", cmd)
 }
