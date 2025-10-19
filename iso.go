@@ -3,6 +3,7 @@ package iso
 
 import (
 	"fmt"
+	"log/slog"
 )
 
 // Client manages the isolated Docker environment
@@ -59,7 +60,7 @@ func (c *Client) Start() error {
 		return err
 	}
 
-	fmt.Printf("Started container %s with ID %s\n", c.containerManager.containerName, id)
+	slog.Info("started container", "container", c.containerManager.containerName, "id", id)
 
 	return nil
 }

@@ -3,6 +3,7 @@ package iso
 import (
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -51,9 +52,9 @@ func newContainerManager() (*containerManager, error) {
 		return nil, fmt.Errorf("Dockerfile not found at %s", dockerfilePath)
 	}
 
-	networkName := fmt.Sprintf("%s_network", projectName)
-	containerName := fmt.Sprintf("%s_shell", projectName)
-	imageName := fmt.Sprintf("%s_shell", projectName)
+	networkName := fmt.Sprintf("%s-network", projectName)
+	containerName := fmt.Sprintf("%s-shell", projectName)
+	imageName := fmt.Sprintf("%s-shell", projectName)
 
 	return &containerManager{
 		docker:         docker,
@@ -80,11 +81,11 @@ func (cm *containerManager) ensureImage() error {
 	}
 
 	if !exists {
-		fmt.Printf("Building image %s from %s...\n", cm.imageName, cm.dockerfilePath)
+		slog.Info("building image", "image", cm.imageName, "dockerfile", cm.dockerfilePath)
 		if err := cm.docker.buildImage(cm.dockerfilePath, cm.imageName); err != nil {
 			return err
 		}
-		fmt.Printf("Image %s built successfully\n", cm.imageName)
+		slog.Info("image built successfully", "image", cm.imageName)
 	}
 
 	return nil
@@ -184,7 +185,7 @@ func (cm *containerManager) runCommand(command []string) (int, error) {
 			if err != nil {
 				return 0, err
 			}
-			fmt.Printf("Starting existing container %s...\n", cm.containerName)
+			slog.Info("starting existing container", "container", cm.containerName)
 			if err := cm.docker.client.ContainerStart(cm.docker.ctx, containerID, container.StartOptions{}); err != nil {
 				return 0, fmt.Errorf("failed to start container: %w", err)
 			}
@@ -200,7 +201,7 @@ func (cm *containerManager) runCommand(command []string) (int, error) {
 			}
 
 			// Start a new container
-			fmt.Printf("Starting new container %s...\n", cm.containerName)
+			slog.Info("starting new container", "container", cm.containerName)
 			containerID, err = cm.startContainer()
 			if err != nil {
 				return 0, err
@@ -324,7 +325,7 @@ func (cm *containerManager) stopContainer() error {
 	}
 
 	if !exists {
-		fmt.Printf("Container %s does not exist\n", cm.containerName)
+		slog.Info("container does not exist", "container", cm.containerName)
 		return nil
 	}
 
@@ -346,7 +347,7 @@ func (cm *containerManager) stopContainer() error {
 		return fmt.Errorf("failed to remove container: %w", err)
 	}
 
-	fmt.Printf("Container %s stopped and removed\n", cm.containerName)
+	slog.Info("container stopped and removed", "container", cm.containerName)
 
 	// Stop all services
 	if err := cm.stopAllServices(); err != nil {
@@ -365,19 +366,19 @@ func (cm *containerManager) rebuildImage() error {
 	}
 
 	if exists {
-		fmt.Printf("Removing existing image %s...\n", cm.imageName)
+		slog.Info("removing existing image", "image", cm.imageName)
 		if err := cm.docker.removeImage(cm.imageName); err != nil {
 			return err
 		}
 	}
 
 	// Build the image
-	fmt.Printf("Building image %s from %s...\n", cm.imageName, cm.dockerfilePath)
+	slog.Info("building image", "image", cm.imageName, "dockerfile", cm.dockerfilePath)
 	if err := cm.docker.buildImage(cm.dockerfilePath, cm.imageName); err != nil {
 		return err
 	}
 
-	fmt.Printf("Image %s built successfully\n", cm.imageName)
+	slog.Info("image built successfully", "image", cm.imageName)
 	return nil
 }
 
@@ -463,7 +464,7 @@ func (cm *containerManager) startService(serviceName string, config ServiceConfi
 	}
 
 	if !imageExists {
-		fmt.Printf("Pulling image %s...\n", config.Image)
+		slog.Info("pulling image", "image", config.Image)
 		if err := cm.docker.pullImage(config.Image); err != nil {
 			return err
 		}
@@ -531,13 +532,13 @@ func (cm *containerManager) startAllServices(verbose bool) error {
 	// Start each service
 	for serviceName, config := range cm.services {
 		if verbose {
-			fmt.Printf("Starting service %s...\n", serviceName)
+			slog.Info("starting service", "service", serviceName)
 		}
 		if err := cm.startService(serviceName, config); err != nil {
 			return err
 		}
 		if verbose {
-			fmt.Printf("Service %s started\n", serviceName)
+			slog.Info("service started", "service", serviceName)
 		}
 	}
 
@@ -584,7 +585,7 @@ func (cm *containerManager) stopAllServices() error {
 	// Remove the network
 	if err := cm.docker.removeNetwork(cm.networkName); err != nil {
 		// Don't fail if network removal fails - it might still be in use
-		fmt.Printf("Warning: failed to remove network %s: %v\n", cm.networkName, err)
+		slog.Warn("failed to remove network", "network", cm.networkName, "error", err)
 	}
 
 	return nil

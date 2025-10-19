@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -10,6 +11,7 @@ import (
 
 	"miren.dev/iso"
 	"miren.dev/mflags"
+	"miren.dev/trifle"
 )
 
 // ExitError carries an exit code
@@ -22,6 +24,11 @@ func (e *ExitError) Error() string {
 }
 
 func main() {
+	// Set up slog with trifle
+	slog.SetDefault(slog.New(trifle.New(os.Stderr, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	})))
+
 	if err := run(); err != nil {
 		var exitErr *ExitError
 		if errors.As(err, &exitErr) {
@@ -170,15 +177,13 @@ func registerStatusCommand(dispatcher *mflags.Dispatcher) {
 			return err
 		}
 
-		fmt.Printf("Image: %s\n", status.ImageName)
+		imageStatus := "does not exist"
 		if status.ImageExists {
-			fmt.Println("  Status: exists")
-		} else {
-			fmt.Println("  Status: does not exist")
+			imageStatus = "exists"
 		}
 
-		fmt.Printf("\nContainer: %s\n", status.ContainerName)
-		fmt.Printf("  Status: %s\n", status.ContainerState)
+		slog.Info("image status", "image", status.ImageName, "status", imageStatus)
+		slog.Info("container status", "container", status.ContainerName, "status", status.ContainerState)
 
 		return nil
 	}
@@ -199,7 +204,7 @@ func registerInitCommand(dispatcher *mflags.Dispatcher) {
 		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT)
 
-		fmt.Println("ISO init process started. Waiting for signals...")
+		slog.Info("init process started, waiting for signals")
 
 		// Sleep loop
 		ticker := time.NewTicker(1 * time.Second)
@@ -208,7 +213,7 @@ func registerInitCommand(dispatcher *mflags.Dispatcher) {
 		for {
 			select {
 			case sig := <-sigChan:
-				fmt.Printf("Received signal %v, exiting...\n", sig)
+				slog.Info("received signal, exiting", "signal", sig)
 				return nil
 			case <-ticker.C:
 				// Continue sleeping
