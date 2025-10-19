@@ -3,54 +3,21 @@ package iso
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 )
-
-// Options configures the ISO client
-type Options struct {
-	// DockerfilePath is the path to the Dockerfile
-	DockerfilePath string
-	// ImageName is the name of the Docker image
-	ImageName string
-	// ContainerName is the name of the container
-	ContainerName string
-}
 
 // Client manages the isolated Docker environment
 type Client struct {
-	opts             Options
 	containerManager *containerManager
 }
 
-// New creates a new ISO client with the given options
-func New(opts Options) (*Client, error) {
-	// Auto-detect .iso directory if using default Dockerfile
-	// If .iso directory exists, prefer .iso/Dockerfile over ./Dockerfile
-	if opts.DockerfilePath == "" || opts.DockerfilePath == "Dockerfile" {
-		isoDir, _, found := findIsoDir()
-		if found {
-			// Use Dockerfile from .iso directory
-			opts.DockerfilePath = filepath.Join(isoDir, "Dockerfile")
-		} else if opts.DockerfilePath == "" {
-			// No .iso directory and no explicit path - use current directory default
-			opts.DockerfilePath = "Dockerfile"
-		}
-	}
-	if opts.ImageName == "" {
-		opts.ImageName = "iso-test-env"
-	}
-	if opts.ContainerName == "" {
-		opts.ContainerName = "iso-test-container"
-	}
-
-	cm, err := newContainerManager(opts.DockerfilePath, opts.ImageName, opts.ContainerName)
+// New creates a new ISO client
+func New() (*Client, error) {
+	cm, err := newContainerManager()
 	if err != nil {
 		return nil, err
 	}
 
 	return &Client{
-		opts:             opts,
 		containerManager: cm,
 	}, nil
 }
@@ -64,11 +31,6 @@ func (c *Client) Close() error {
 func (c *Client) Run(command []string) (int, error) {
 	if len(command) == 0 {
 		return 0, fmt.Errorf("no command specified")
-	}
-
-	// Check if Dockerfile exists
-	if _, err := os.Stat(c.opts.DockerfilePath); os.IsNotExist(err) {
-		return 0, fmt.Errorf("Dockerfile not found: %s", c.opts.DockerfilePath)
 	}
 
 	return c.containerManager.runCommand(command)
@@ -104,21 +66,11 @@ func (c *Client) Start() error {
 
 // Build ensures the Docker image exists, building it if necessary
 func (c *Client) Build() error {
-	// Check if Dockerfile exists
-	if _, err := os.Stat(c.opts.DockerfilePath); os.IsNotExist(err) {
-		return fmt.Errorf("Dockerfile not found: %s", c.opts.DockerfilePath)
-	}
-
 	return c.containerManager.ensureImage()
 }
 
 // Rebuild forces a rebuild of the Docker image
 func (c *Client) Rebuild() error {
-	// Check if Dockerfile exists
-	if _, err := os.Stat(c.opts.DockerfilePath); os.IsNotExist(err) {
-		return fmt.Errorf("Dockerfile not found: %s", c.opts.DockerfilePath)
-	}
-
 	return c.containerManager.rebuildImage()
 }
 

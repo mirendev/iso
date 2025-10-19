@@ -25,7 +25,7 @@ type containerManager struct {
 }
 
 // newContainerManager creates a new container manager
-func newContainerManager(dockerfilePath, imageName, containerName string) (*containerManager, error) {
+func newContainerManager() (*containerManager, error) {
 	docker, err := newDockerClient()
 	if err != nil {
 		return nil, err
@@ -33,27 +33,27 @@ func newContainerManager(dockerfilePath, imageName, containerName string) (*cont
 
 	// Try to find .iso directory
 	isoDir, projectRoot, found := findIsoDir()
-	var services map[string]ServiceConfig
-	projectName := "iso"
-
-	if found {
-		// Load services if .iso directory exists
-		services, err = loadServicesFile(isoDir)
-		if err != nil {
-			return nil, err
-		}
-		projectName = filepath.Base(projectRoot)
-	} else {
-		// No .iso directory - no services
-		services = make(map[string]ServiceConfig)
-		isoDir = ""
+	if !found {
+		return nil, fmt.Errorf("no .iso directory found - please create one with a Dockerfile and optional services.yml")
 	}
 
-	dockerfilePath = filepath.Join(isoDir, "Dockerfile")
+	// Load services if they exist
+	services, err := loadServicesFile(isoDir)
+	if err != nil {
+		return nil, err
+	}
+
+	projectName := filepath.Base(projectRoot)
+	dockerfilePath := filepath.Join(isoDir, "Dockerfile")
+
+	// Check if Dockerfile exists
+	if _, err := os.Stat(dockerfilePath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("Dockerfile not found at %s", dockerfilePath)
+	}
 
 	networkName := fmt.Sprintf("%s_network", projectName)
-	containerName = fmt.Sprintf("%s_shell", projectName)
-	imageName = fmt.Sprintf("%s_shell", projectName)
+	containerName := fmt.Sprintf("%s_shell", projectName)
+	imageName := fmt.Sprintf("%s_shell", projectName)
 
 	return &containerManager{
 		docker:         docker,

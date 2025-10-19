@@ -12,12 +12,6 @@ import (
 	"miren.dev/mflags"
 )
 
-const (
-	defaultDockerfile    = "Dockerfile"
-	defaultImageName     = "iso-test-env"
-	defaultContainerName = "iso-test-container"
-)
-
 // ExitError carries an exit code
 type ExitError struct {
 	Code int
@@ -57,28 +51,15 @@ func run() error {
 func registerRunCommand(dispatcher *mflags.Dispatcher) {
 	fs := mflags.NewFlagSet("run")
 
-	// Dockerfile-based options
-	fs.String("dockerfile", 'f', defaultDockerfile, "Path to Dockerfile")
-	fs.String("image", 'i', defaultImageName, "Name of the Docker image")
-	fs.String("container", 'c', defaultContainerName, "Name of the container")
-
 	// Allow unknown flags to pass through to the command
 	fs.AllowUnknownFlags(true)
 
 	handler := func(fs *mflags.FlagSet, args []string) error {
-		dockerfile := fs.Lookup("dockerfile").Value.String()
-		imageName := fs.Lookup("image").Value.String()
-		containerName := fs.Lookup("container").Value.String()
-
 		// Combine positional args and unknown flags to form the command
 		// Unknown flags come after positional args
 		command := append(args, fs.UnknownFlags()...)
 
-		client, err := iso.New(iso.Options{
-			DockerfilePath: dockerfile,
-			ImageName:      imageName,
-			ContainerName:  containerName,
-		})
+		client, err := iso.New()
 		if err != nil {
 			return err
 		}
@@ -107,23 +88,12 @@ func registerRunCommand(dispatcher *mflags.Dispatcher) {
 func registerBuildCommand(dispatcher *mflags.Dispatcher) {
 	fs := mflags.NewFlagSet("build")
 
-	// Dockerfile-based options
-	fs.String("dockerfile", 'f', defaultDockerfile, "Path to Dockerfile")
-	fs.String("image", 'i', defaultImageName, "Name of the Docker image")
-	fs.String("container", 'c', defaultContainerName, "Name of the container")
 	rebuild := fs.Bool("rebuild", 'r', false, "Force rebuild even if image exists")
 
 	handler := func(fs *mflags.FlagSet, args []string) error {
-		dockerfile := fs.Lookup("dockerfile").Value.String()
-		imageName := fs.Lookup("image").Value.String()
-		containerName := fs.Lookup("container").Value.String()
 		doRebuild := *rebuild
 
-		client, err := iso.New(iso.Options{
-			DockerfilePath: dockerfile,
-			ImageName:      imageName,
-			ContainerName:  containerName,
-		})
+		client, err := iso.New()
 		if err != nil {
 			return err
 		}
@@ -146,21 +116,8 @@ func registerBuildCommand(dispatcher *mflags.Dispatcher) {
 func registerStartCommand(dispatcher *mflags.Dispatcher) {
 	fs := mflags.NewFlagSet("start")
 
-	// Dockerfile-based options
-	fs.String("dockerfile", 'f', defaultDockerfile, "Path to Dockerfile")
-	fs.String("image", 'i', defaultImageName, "Name of the Docker image")
-	fs.String("container", 'c', defaultContainerName, "Name of the container")
-
 	handler := func(fs *mflags.FlagSet, args []string) error {
-		dockerfile := fs.Lookup("dockerfile").Value.String()
-		imageName := fs.Lookup("image").Value.String()
-		containerName := fs.Lookup("container").Value.String()
-
-		client, err := iso.New(iso.Options{
-			DockerfilePath: dockerfile,
-			ImageName:      imageName,
-			ContainerName:  containerName,
-		})
+		client, err := iso.New()
 		if err != nil {
 			return err
 		}
@@ -180,21 +137,8 @@ func registerStartCommand(dispatcher *mflags.Dispatcher) {
 func registerStopCommand(dispatcher *mflags.Dispatcher) {
 	fs := mflags.NewFlagSet("stop")
 
-	// Dockerfile-based options
-	fs.String("dockerfile", 'f', defaultDockerfile, "Path to Dockerfile")
-	fs.String("image", 'i', defaultImageName, "Name of the Docker image")
-	fs.String("container", 'c', defaultContainerName, "Name of the container")
-
 	handler := func(fs *mflags.FlagSet, args []string) error {
-		dockerfile := fs.Lookup("dockerfile").Value.String()
-		imageName := fs.Lookup("image").Value.String()
-		containerName := fs.Lookup("container").Value.String()
-
-		client, err := iso.New(iso.Options{
-			DockerfilePath: dockerfile,
-			ImageName:      imageName,
-			ContainerName:  containerName,
-		})
+		client, err := iso.New()
 		if err != nil {
 			return err
 		}
@@ -214,21 +158,8 @@ func registerStopCommand(dispatcher *mflags.Dispatcher) {
 func registerStatusCommand(dispatcher *mflags.Dispatcher) {
 	fs := mflags.NewFlagSet("status")
 
-	// Dockerfile-based options
-	fs.String("dockerfile", 'f', defaultDockerfile, "Path to Dockerfile")
-	fs.String("image", 'i', defaultImageName, "Name of the Docker image")
-	fs.String("container", 'c', defaultContainerName, "Name of the container")
-
 	handler := func(fs *mflags.FlagSet, args []string) error {
-		dockerfile := fs.Lookup("dockerfile").Value.String()
-		imageName := fs.Lookup("image").Value.String()
-		containerName := fs.Lookup("container").Value.String()
-
-		client, err := iso.New(iso.Options{
-			DockerfilePath: dockerfile,
-			ImageName:      imageName,
-			ContainerName:  containerName,
-		})
+		client, err := iso.New()
 		if err != nil {
 			return err
 		}
