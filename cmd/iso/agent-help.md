@@ -10,7 +10,9 @@ ISO requires a `.iso` directory in your project root containing:
 project-root/
 ├── .iso/
 │   ├── Dockerfile          # Required: Defines the container environment
-│   └── services.yml        # Optional: Defines service containers
+│   ├── services.yml        # Optional: Defines service containers
+│   ├── pre-run.sh          # Optional: Runs before every command
+│   └── post-run.sh         # Optional: Runs after every command
 ├── your-project-files/
 └── ...
 ```
@@ -61,6 +63,43 @@ services:
       REDIS_PASSWORD: secret
 ```
 
+### .iso/pre-run.sh and .iso/post-run.sh
+
+Optional shell scripts that run automatically before and after every `iso run` command:
+
+**pre-run.sh**:
+- Executes before your command runs
+- Useful for setup tasks like waiting for services, running migrations, or checking prerequisites
+- If the script exits with a non-zero code, the main command is aborted
+- Runs in the same working directory as your command
+
+**post-run.sh**:
+- Executes after your command completes
+- Useful for cleanup tasks, generating reports, or logging
+- Always runs regardless of the main command's exit code
+- Failures in post-run.sh are logged but don't affect the main command's exit code
+
+Example pre-run.sh:
+```bash
+#!/bin/bash
+# Wait for MySQL to be ready
+until mysql -h mysql -u testuser -ptestpass -e "SELECT 1" > /dev/null 2>&1; do
+  echo "Waiting for MySQL..."
+  sleep 1
+done
+echo "MySQL is ready"
+```
+
+Example post-run.sh:
+```bash
+#!/bin/bash
+# Clean up temporary files
+rm -rf /workspace/tmp/*
+echo "Cleanup complete"
+```
+
+**Note**: Both scripts must be executable (`chmod +x .iso/pre-run.sh .iso/post-run.sh`)
+
 ## Naming Conventions
 
 All resources are automatically named based on your project directory:
@@ -84,8 +123,10 @@ Example: If your project is in `/home/user/myapp`:
 Run a command in the isolated container. The container will:
 1. Start any defined services (if not already running)
 2. Start the main container (building the image if needed)
-3. Execute your command in the correct working directory
-4. Forward stdin/stdout/stderr transparently
+3. Execute `.iso/pre-run.sh` if it exists (aborts if it fails)
+4. Execute your command in the correct working directory
+5. Execute `.iso/post-run.sh` if it exists (failure logged but doesn't affect exit code)
+6. Forward stdin/stdout/stderr transparently
 
 Examples:
 ```bash
@@ -202,6 +243,8 @@ iso run <your-command>
 6. **Persistent containers**: Containers persist between commands for faster startup
 7. **Network isolation**: Each project gets its own isolated network
 8. **Clean shutdown**: Use `iso stop` to clean up all resources
+9. **Pre/Post hooks**: Use `.iso/pre-run.sh` for service readiness checks and `.iso/post-run.sh` for cleanup tasks
+10. **Hook executability**: Remember to make hook scripts executable with `chmod +x`
 
 ## Troubleshooting
 

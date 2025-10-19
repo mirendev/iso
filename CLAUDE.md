@@ -1,1 +1,2 @@
 - Use `quake build` to build bin/iso
+- When changing anything about the interface, be sure that @cmd/iso/agent-help.md is updated to match the changes
