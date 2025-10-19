@@ -170,7 +170,7 @@ func registerStartCommand(dispatcher *mflags.Dispatcher) {
 	}
 
 	cmd := mflags.NewCommand(fs, handler,
-		mflags.WithUsage("Start the compose stack and show all startup output"),
+		mflags.WithUsage("Start all services with verbose output"),
 	)
 
 	dispatcher.Dispatch("start", cmd)
@@ -204,7 +204,7 @@ func registerStopCommand(dispatcher *mflags.Dispatcher) {
 	}
 
 	cmd := mflags.NewCommand(fs, handler,
-		mflags.WithUsage("Stop and remove the container"),
+		mflags.WithUsage("Stop and remove the container and all services"),
 	)
 
 	dispatcher.Dispatch("stop", cmd)

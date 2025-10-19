@@ -1,0 +1,6 @@
+
+
+task build {
+  @echo "Building iso..."
+  CGO_ENABLED=0 go build -o bin/iso ./cmd/iso
+}

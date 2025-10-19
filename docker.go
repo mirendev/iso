@@ -10,6 +10,7 @@ import (
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/archive"
 )
@@ -154,5 +155,57 @@ func (d *dockerClient) removeImage(imageName string) error {
 	if err != nil {
 		return fmt.Errorf("failed to remove image: %w", err)
 	}
+	return nil
+}
+
+// createNetwork creates a Docker network
+func (d *dockerClient) createNetwork(networkName string) (string, error) {
+	resp, err := d.client.NetworkCreate(d.ctx, networkName, network.CreateOptions{
+		Driver: "bridge",
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to create network: %w", err)
+	}
+	return resp.ID, nil
+}
+
+// networkExists checks if a Docker network exists
+func (d *dockerClient) networkExists(networkName string) (bool, error) {
+	networks, err := d.client.NetworkList(d.ctx, network.ListOptions{})
+	if err != nil {
+		return false, fmt.Errorf("failed to list networks: %w", err)
+	}
+
+	for _, net := range networks {
+		if net.Name == networkName {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// removeNetwork removes a Docker network
+func (d *dockerClient) removeNetwork(networkName string) error {
+	err := d.client.NetworkRemove(d.ctx, networkName)
+	if err != nil {
+		return fmt.Errorf("failed to remove network: %w", err)
+	}
+	return nil
+}
+
+// pullImage pulls a Docker image from a registry
+func (d *dockerClient) pullImage(imageName string) error {
+	out, err := d.client.ImagePull(d.ctx, imageName, image.PullOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to pull image: %w", err)
+	}
+	defer out.Close()
+
+	// Stream the pull output
+	_, err = io.Copy(os.Stdout, out)
+	if err != nil {
+		return fmt.Errorf("failed to read pull output: %w", err)
+	}
+
 	return nil
 }

@@ -6,10 +6,15 @@ echo
 
 # Wait a moment for MySQL to be fully ready
 echo "Waiting for MySQL to be ready..."
-sleep 2
+sleep 10
+
+export MYSQL_ROOT_PASSWORD=rootpass
+export MYSQL_DATABASE=testdb
+export MYSQL_USER=testuser
+export MYSQL_PASSWORD=testpass
 
 # MySQL connection options (skip SSL for this test)
-MYSQL_OPTS="--skip-ssl -h$MYSQL_HOST -u$MYSQL_USER -p$MYSQL_PASSWORD $MYSQL_DATABASE"
+MYSQL_OPTS="--host=mysql --user=$MYSQL_USER --password=$MYSQL_PASSWORD --skip-ssl $MYSQL_DATABASE"
 
 # Test connection
 echo "Testing connection to MySQL..."

@@ -1,0 +1,1 @@
+- Use `quake build` to build bin/iso

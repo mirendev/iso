@@ -8,6 +8,7 @@ import (
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/api/types/network"
 	"github.com/moby/term"
 )
 
@@ -17,6 +18,10 @@ type containerManager struct {
 	imageName      string
 	containerName  string
 	dockerfilePath string
+	projectName    string
+	networkName    string
+	services       map[string]ServiceConfig
+	isoDir         string
 }
 
 // newContainerManager creates a new container manager
@@ -26,11 +31,39 @@ func newContainerManager(dockerfilePath, imageName, containerName string) (*cont
 		return nil, err
 	}
 
+	// Try to find .iso directory
+	isoDir, projectRoot, found := findIsoDir()
+	var services map[string]ServiceConfig
+	projectName := "iso"
+
+	if found {
+		// Load services if .iso directory exists
+		services, err = loadServicesFile(isoDir)
+		if err != nil {
+			return nil, err
+		}
+		projectName = filepath.Base(projectRoot)
+	} else {
+		// No .iso directory - no services
+		services = make(map[string]ServiceConfig)
+		isoDir = ""
+	}
+
+	dockerfilePath = filepath.Join(isoDir, "Dockerfile")
+
+	networkName := fmt.Sprintf("%s_network", projectName)
+	containerName = fmt.Sprintf("%s_shell", projectName)
+	imageName = fmt.Sprintf("%s_shell", projectName)
+
 	return &containerManager{
 		docker:         docker,
 		imageName:      imageName,
 		containerName:  containerName,
 		dockerfilePath: dockerfilePath,
+		projectName:    projectName,
+		networkName:    networkName,
+		services:       services,
+		isoDir:         isoDir,
 	}, nil
 }
 
@@ -59,35 +92,56 @@ func (cm *containerManager) ensureImage() error {
 
 // startContainer starts a new container
 func (cm *containerManager) startContainer() (string, error) {
-	// Get the directory containing the Dockerfile
-	dockerfileDir := filepath.Dir(cm.dockerfilePath)
+	// Determine the mount path
+	var mountPath string
+	if cm.isoDir != "" {
+		// If using .iso directory, mount the project root (parent of .iso)
+		mountPath = filepath.Dir(cm.isoDir)
+	} else {
+		// Otherwise mount the directory containing the Dockerfile
+		dockerfileDir := filepath.Dir(cm.dockerfilePath)
+		var err error
+		mountPath, err = filepath.Abs(dockerfileDir)
+		if err != nil {
+			return "", fmt.Errorf("failed to get absolute path of Dockerfile directory: %w", err)
+		}
+	}
 
-	// Get absolute path of the Dockerfile directory
-	absPath, err := filepath.Abs(dockerfileDir)
+	isoPath, err := os.Executable()
 	if err != nil {
-		return "", fmt.Errorf("failed to get absolute path of Dockerfile directory: %w", err)
+		return "", fmt.Errorf("failed to get executable path: %w", err)
 	}
 
 	// Create container
 	config := &container.Config{
 		Image:      cm.imageName,
-		Tty:        true,
-		OpenStdin:  true,
 		WorkingDir: "/workspace",
+		Cmd:        []string{"/iso", "init"},
 	}
 
 	hostConfig := &container.HostConfig{
 		Binds: []string{
-			fmt.Sprintf("%s:/workspace", absPath),
+			fmt.Sprintf("%s:/workspace", mountPath),
+			fmt.Sprintf("%s:/iso:ro", isoPath),
 		},
 		AutoRemove: false,
+	}
+
+	// Set up network configuration if we have services
+	var networkConfig *network.NetworkingConfig
+	if len(cm.services) > 0 {
+		networkConfig = &network.NetworkingConfig{
+			EndpointsConfig: map[string]*network.EndpointSettings{
+				cm.networkName: {},
+			},
+		}
 	}
 
 	resp, err := cm.docker.client.ContainerCreate(
 		cm.docker.ctx,
 		config,
 		hostConfig,
-		nil,
+		networkConfig,
 		nil,
 		cm.containerName,
 	)
@@ -120,6 +174,11 @@ func (cm *containerManager) runCommand(command []string) (int, error) {
 		}
 
 		if exists {
+			// Start services first
+			if err := cm.startAllServices(false); err != nil {
+				return 0, err
+			}
+
 			// Get container ID and start it
 			containerID, err = cm.docker.getContainerID(cm.containerName)
 			if err != nil {
@@ -132,6 +191,11 @@ func (cm *containerManager) runCommand(command []string) (int, error) {
 		} else {
 			// Ensure image exists
 			if err := cm.ensureImage(); err != nil {
+				return 0, err
+			}
+
+			// Start services first
+			if err := cm.startAllServices(false); err != nil {
 				return 0, err
 			}
 
@@ -158,15 +222,22 @@ func (cm *containerManager) runCommand(command []string) (int, error) {
 		return 0, fmt.Errorf("failed to get current directory: %w", err)
 	}
 
-	// Get absolute path of Dockerfile directory
-	dockerfileDir := filepath.Dir(cm.dockerfilePath)
-	absDockerfileDir, err := filepath.Abs(dockerfileDir)
-	if err != nil {
-		return 0, fmt.Errorf("failed to get absolute path of Dockerfile directory: %w", err)
+	// Determine the mount root (same logic as startContainer)
+	var mountRoot string
+	if cm.isoDir != "" {
+		// If using .iso directory, mount root is the project root (parent of .iso)
+		mountRoot = filepath.Dir(cm.isoDir)
+	} else {
+		// Otherwise mount root is the directory containing the Dockerfile
+		dockerfileDir := filepath.Dir(cm.dockerfilePath)
+		mountRoot, err = filepath.Abs(dockerfileDir)
+		if err != nil {
+			return 0, fmt.Errorf("failed to get absolute path of Dockerfile directory: %w", err)
+		}
 	}
 
-	// Calculate relative path from Dockerfile dir to current dir
-	relPath, err := filepath.Rel(absDockerfileDir, cwd)
+	// Calculate relative path from mount root to current dir
+	relPath, err := filepath.Rel(mountRoot, cwd)
 	if err != nil {
 		return 0, fmt.Errorf("failed to calculate relative path: %w", err)
 	}
@@ -276,6 +347,12 @@ func (cm *containerManager) stopContainer() error {
 	}
 
 	fmt.Printf("Container %s stopped and removed\n", cm.containerName)
+
+	// Stop all services
+	if err := cm.stopAllServices(); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -325,6 +402,192 @@ func (cm *containerManager) getStatus() (string, error) {
 	}
 
 	return "Container exists but is stopped", nil
+}
+
+// ensureNetwork creates the Docker network if it doesn't exist
+func (cm *containerManager) ensureNetwork() error {
+	if len(cm.services) == 0 {
+		// No services, no need for network
+		return nil
+	}
+
+	exists, err := cm.docker.networkExists(cm.networkName)
+	if err != nil {
+		return err
+	}
+
+	if !exists {
+		_, err = cm.docker.createNetwork(cm.networkName)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// startService starts a single service container
+func (cm *containerManager) startService(serviceName string, config ServiceConfig) error {
+	containerName := fmt.Sprintf("%s_%s", cm.projectName, serviceName)
+
+	// Check if service container already exists and is running
+	running, err := cm.docker.isContainerRunning(containerName)
+	if err != nil {
+		return err
+	}
+
+	if running {
+		// Service already running
+		return nil
+	}
+
+	// Check if container exists but is stopped
+	exists, err := cm.docker.containerExists(containerName)
+	if err != nil {
+		return err
+	}
+
+	if exists {
+		// Start existing container
+		containerID, err := cm.docker.getContainerID(containerName)
+		if err != nil {
+			return err
+		}
+		return cm.docker.client.ContainerStart(cm.docker.ctx, containerID, container.StartOptions{})
+	}
+
+	// Pull the image if it doesn't exist
+	imageExists, err := cm.docker.imageExists(config.Image)
+	if err != nil {
+		return err
+	}
+
+	if !imageExists {
+		fmt.Printf("Pulling image %s...\n", config.Image)
+		if err := cm.docker.pullImage(config.Image); err != nil {
+			return err
+		}
+	}
+
+	// Convert environment map to slice
+	var env []string
+	for key, value := range config.Environment {
+		env = append(env, fmt.Sprintf("%s=%s", key, value))
+	}
+
+	// Create container config
+	containerConfig := &container.Config{
+		Image: config.Image,
+		Env:   env,
+	}
+
+	// Set command if specified
+	if len(config.Command) > 0 {
+		containerConfig.Cmd = config.Command
+	}
+
+	hostConfig := &container.HostConfig{}
+
+	networkConfig := &network.NetworkingConfig{
+		EndpointsConfig: map[string]*network.EndpointSettings{
+			cm.networkName: {
+				Aliases: []string{serviceName},
+			},
+		},
+	}
+
+	// Create the service container
+	resp, err := cm.docker.client.ContainerCreate(
+		cm.docker.ctx,
+		containerConfig,
+		hostConfig,
+		networkConfig,
+		nil,
+		containerName,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create service container %s: %w", serviceName, err)
+	}
+
+	// Start the service container
+	if err := cm.docker.client.ContainerStart(cm.docker.ctx, resp.ID, container.StartOptions{}); err != nil {
+		return fmt.Errorf("failed to start service container %s: %w", serviceName, err)
+	}
+
+	return nil
+}
+
+// startAllServices starts all service containers
+func (cm *containerManager) startAllServices(verbose bool) error {
+	if len(cm.services) == 0 {
+		return nil
+	}
+
+	// Ensure network exists
+	if err := cm.ensureNetwork(); err != nil {
+		return err
+	}
+
+	// Start each service
+	for serviceName, config := range cm.services {
+		if verbose {
+			fmt.Printf("Starting service %s...\n", serviceName)
+		}
+		if err := cm.startService(serviceName, config); err != nil {
+			return err
+		}
+		if verbose {
+			fmt.Printf("Service %s started\n", serviceName)
+		}
+	}
+
+	return nil
+}
+
+// stopAllServices stops and removes all service containers
+func (cm *containerManager) stopAllServices() error {
+	if len(cm.services) == 0 {
+		return nil
+	}
+
+	for serviceName := range cm.services {
+		containerName := fmt.Sprintf("%s_%s", cm.projectName, serviceName)
+
+		exists, err := cm.docker.containerExists(containerName)
+		if err != nil {
+			return err
+		}
+
+		if !exists {
+			continue
+		}
+
+		containerID, err := cm.docker.getContainerID(containerName)
+		if err != nil {
+			return err
+		}
+
+		// Stop the container
+		timeout := 10
+		if err := cm.docker.client.ContainerStop(cm.docker.ctx, containerID, container.StopOptions{
+			Timeout: &timeout,
+		}); err != nil {
+			return fmt.Errorf("failed to stop service %s: %w", serviceName, err)
+		}
+
+		// Remove the container
+		if err := cm.docker.client.ContainerRemove(cm.docker.ctx, containerID, container.RemoveOptions{}); err != nil {
+			return fmt.Errorf("failed to remove service %s: %w", serviceName, err)
+		}
+	}
+
+	// Remove the network
+	if err := cm.docker.removeNetwork(cm.networkName); err != nil {
+		// Don't fail if network removal fails - it might still be in use
+		fmt.Printf("Warning: failed to remove network %s: %v\n", cm.networkName, err)
+	}
+
+	return nil
 }
 
 // pullImage pulls a Docker image from a registry

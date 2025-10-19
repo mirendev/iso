@@ -1,0 +1,11 @@
+services:
+  mysql:
+    image: mysql:8.0
+    command:
+      - --default-authentication-plugin=mysql_native_password
+      - --skip-ssl
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: testdb
+      MYSQL_USER: testuser
+      MYSQL_PASSWORD: testpass
