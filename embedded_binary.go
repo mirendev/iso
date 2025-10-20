@@ -14,10 +14,10 @@ import (
 	"runtime"
 )
 
-//go:embed iso-linux-amd64.gz
+//go:embed build/iso-linux-amd64.gz
 var linuxBinaryAmd64Gz []byte
 
-//go:embed iso-linux-arm64.gz
+//go:embed build/iso-linux-arm64.gz
 var linuxBinaryArm64Gz []byte
 
 // extractLinuxBinary extracts the embedded Linux iso binary to the .iso directory

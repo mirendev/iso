@@ -1,17 +1,21 @@
 
 
 task build {
+  @echo "Creating build directory..."
+  mkdir -p build
+
   @echo "Building Linux iso binaries..."
-  GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -tags linux_build -o iso-linux-amd64 ./cmd/iso
-  GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -tags linux_build -o iso-linux-arm64 ./cmd/iso
+  GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -tags linux_build -o build/iso-linux-amd64 ./cmd/iso
+  GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -tags linux_build -o build/iso-linux-arm64 ./cmd/iso
 
   @echo "Compressing Linux binaries..."
-  gzip -9 -f iso-linux-amd64
-  gzip -9 -f iso-linux-arm64
+  gzip -9 -f build/iso-linux-amd64
+  gzip -9 -f build/iso-linux-arm64
 
   @echo "Zeroing out current architecture binary (will use os.Executable)..."
-  if [ "$(go env GOOS)" = "linux" ]; then : | gzip > iso-linux-$(go env GOARCH).gz; fi
+  if [ "$(go env GOOS)" = "linux" ]; then : | gzip > build/iso-linux-$(go env GOARCH).gz; fi
 
   @echo "Building iso..."
+  mkdir -p bin
   CGO_ENABLED=0 go build -o bin/iso ./cmd/iso
 }
