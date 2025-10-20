@@ -24,6 +24,7 @@ type containerManager struct {
 	networkName    string
 	services       map[string]ServiceConfig
 	isoDir         string
+	tempIsoPath    string // Path to extracted Linux iso binary
 }
 
 // newContainerManager creates a new container manager
@@ -57,6 +58,18 @@ func newContainerManager() (*containerManager, error) {
 	containerName := fmt.Sprintf("%s-shell", projectName)
 	imageName := fmt.Sprintf("%s-shell", projectName)
 
+	// Get Docker architecture to determine which binary to use
+	arch, err := docker.getArchitecture()
+	if err != nil {
+		return nil, err
+	}
+
+	// Extract the embedded Linux iso binary to .iso directory (reuses if exists)
+	isoPath, err := extractLinuxBinary(isoDir, arch)
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract Linux binary: %w", err)
+	}
+
 	return &containerManager{
 		docker:         docker,
 		imageName:      imageName,
@@ -66,11 +79,13 @@ func newContainerManager() (*containerManager, error) {
 		networkName:    networkName,
 		services:       services,
 		isoDir:         isoDir,
+		tempIsoPath:    isoPath,
 	}, nil
 }
 
 // close closes the container manager and Docker client
 func (cm *containerManager) close() error {
+	// Note: We don't clean up tempIsoPath as it's in .iso directory and reused
 	return cm.docker.close()
 }
 
@@ -109,11 +124,6 @@ func (cm *containerManager) startContainer() (string, error) {
 		}
 	}
 
-	isoPath, err := os.Executable()
-	if err != nil {
-		return "", fmt.Errorf("failed to get executable path: %w", err)
-	}
-
 	// Build ISO_SERVICES environment variable from services with ports
 	var isoServices []string
 	for serviceName, serviceConfig := range cm.services {
@@ -139,7 +149,7 @@ func (cm *containerManager) startContainer() (string, error) {
 	hostConfig := &container.HostConfig{
 		Binds: []string{
 			fmt.Sprintf("%s:/workspace", mountPath),
-			fmt.Sprintf("%s:/iso:ro", isoPath),
+			fmt.Sprintf("%s:/iso:ro", cm.tempIsoPath),
 		},
 		AutoRemove: false,
 	}

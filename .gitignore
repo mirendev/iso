@@ -2,6 +2,8 @@
 /iso
 bin/iso
 cmd/iso/iso
+iso-linux-amd64
+iso-linux-arm64
 *.exe
 *.dll
 *.so

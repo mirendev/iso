@@ -39,6 +39,24 @@ func (d *dockerClient) close() error {
 	return d.client.Close()
 }
 
+// getArchitecture returns the architecture Docker is using for containers
+func (d *dockerClient) getArchitecture() (string, error) {
+	info, err := d.client.Info(d.ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to get Docker info: %w", err)
+	}
+
+	// Map Docker architecture names to our binary names
+	switch info.Architecture {
+	case "x86_64", "amd64":
+		return "amd64", nil
+	case "aarch64", "arm64":
+		return "arm64", nil
+	default:
+		return "", fmt.Errorf("unsupported Docker architecture: %s", info.Architecture)
+	}
+}
+
 // buildImage builds a Docker image from a Dockerfile
 func (d *dockerClient) buildImage(dockerfilePath, imageName string) error {
 	// Get the directory containing the Dockerfile
