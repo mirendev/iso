@@ -8,6 +8,13 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// Config defines configuration for the ISO environment
+type Config struct {
+	Privileged bool     `yaml:"privileged"`
+	WorkDir    string   `yaml:"workdir"`
+	Volumes    []string `yaml:"volumes"`
+}
+
 // ServiceConfig defines configuration for a service container
 type ServiceConfig struct {
 	Image       string            `yaml:"image"`
@@ -19,6 +26,42 @@ type ServiceConfig struct {
 // ServicesFile represents the structure of services.yml
 type ServicesFile struct {
 	Services map[string]ServiceConfig `yaml:"services"`
+}
+
+// loadConfigFile loads and parses the .iso/config.yml file
+// Returns default config if the file doesn't exist (config is optional)
+func loadConfigFile(isoDir string) (*Config, error) {
+	configPath := filepath.Join(isoDir, "config.yml")
+
+	// Default configuration
+	config := &Config{
+		Privileged: false,
+		WorkDir:    "/workspace",
+	}
+
+	// Check if file exists
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		// No config file is OK - return defaults
+		return config, nil
+	}
+
+	// Read the file
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read config file: %w", err)
+	}
+
+	// Parse YAML
+	if err := yaml.Unmarshal(data, config); err != nil {
+		return nil, fmt.Errorf("failed to parse config file: %w", err)
+	}
+
+	// Ensure workdir has a default if not specified
+	if config.WorkDir == "" {
+		config.WorkDir = "/workspace"
+	}
+
+	return config, nil
 }
 
 // loadServicesFile loads and parses the .iso/services.yml file

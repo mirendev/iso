@@ -5,8 +5,10 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
@@ -25,6 +27,7 @@ type containerManager struct {
 	services       map[string]ServiceConfig
 	isoDir         string
 	tempIsoPath    string // Path to extracted Linux iso binary
+	config         *Config
 }
 
 // newContainerManager creates a new container manager
@@ -38,6 +41,12 @@ func newContainerManager() (*containerManager, error) {
 	isoDir, projectRoot, found := findIsoDir()
 	if !found {
 		return nil, fmt.Errorf("no .iso directory found - please create one with a Dockerfile and optional services.yml")
+	}
+
+	// Load config if it exists
+	config, err := loadConfigFile(isoDir)
+	if err != nil {
+		return nil, err
 	}
 
 	// Load services if they exist
@@ -80,6 +89,7 @@ func newContainerManager() (*containerManager, error) {
 		services:       services,
 		isoDir:         isoDir,
 		tempIsoPath:    isoPath,
+		config:         config,
 	}, nil
 }
 
@@ -87,6 +97,35 @@ func newContainerManager() (*containerManager, error) {
 func (cm *containerManager) close() error {
 	// Note: We don't clean up tempIsoPath as it's in .iso directory and reused
 	return cm.docker.close()
+}
+
+// getVolumeNameForPath generates a Docker volume name for a container path
+func (cm *containerManager) getVolumeNameForPath(path string) string {
+	// Sanitize the path to create a valid volume name
+	// Replace / with - and remove leading/trailing dashes
+	sanitized := strings.ReplaceAll(strings.Trim(path, "/"), "/", "-")
+	return fmt.Sprintf("%s-%s", cm.projectName, sanitized)
+}
+
+// ensureVolumes creates Docker volumes for configured volume paths
+func (cm *containerManager) ensureVolumes() error {
+	for _, volumePath := range cm.config.Volumes {
+		volumeName := cm.getVolumeNameForPath(volumePath)
+
+		// Check if volume exists
+		exists, err := cm.docker.volumeExists(volumeName)
+		if err != nil {
+			return err
+		}
+
+		if !exists {
+			slog.Debug("creating volume", "volume", volumeName, "path", volumePath)
+			if err := cm.docker.createVolume(volumeName); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // ensureImage ensures the Docker image exists, building it if necessary
@@ -133,25 +172,42 @@ func (cm *containerManager) startContainer() (string, error) {
 	}
 
 	// Create container environment
-	env := []string{}
+	env := []string{
+		fmt.Sprintf("ISO_WORKDIR=%s", cm.config.WorkDir),
+	}
 	if len(isoServices) > 0 {
 		env = append(env, fmt.Sprintf("ISO_SERVICES=%s", strings.Join(isoServices, ",")))
 	}
 
+	// Ensure volumes exist
+	if err := cm.ensureVolumes(); err != nil {
+		return "", err
+	}
+
+	// Build bind mounts list
+	binds := []string{
+		fmt.Sprintf("%s:%s", mountPath, cm.config.WorkDir),
+		fmt.Sprintf("%s:/iso:ro", cm.tempIsoPath),
+	}
+
+	// Add volume mounts
+	for _, volumePath := range cm.config.Volumes {
+		volumeName := cm.getVolumeNameForPath(volumePath)
+		binds = append(binds, fmt.Sprintf("%s:%s", volumeName, volumePath))
+	}
+
 	// Create container
-	config := &container.Config{
+	containerConfig := &container.Config{
 		Image:      cm.imageName,
-		WorkingDir: "/workspace",
+		WorkingDir: cm.config.WorkDir,
 		Cmd:        []string{"/iso", "init"},
 		Env:        env,
 	}
 
 	hostConfig := &container.HostConfig{
-		Binds: []string{
-			fmt.Sprintf("%s:/workspace", mountPath),
-			fmt.Sprintf("%s:/iso:ro", cm.tempIsoPath),
-		},
-		AutoRemove: false,
+		Binds:       binds,
+		AutoRemove:  false,
+		Privileged:  cm.config.Privileged,
 	}
 
 	// Set up network configuration if we have services
@@ -166,7 +222,7 @@ func (cm *containerManager) startContainer() (string, error) {
 
 	resp, err := cm.docker.client.ContainerCreate(
 		cm.docker.ctx,
-		config,
+		containerConfig,
 		hostConfig,
 		networkConfig,
 		nil,
@@ -185,7 +241,8 @@ func (cm *containerManager) startContainer() (string, error) {
 }
 
 // runCommand runs a command in the container and returns the exit code
-func (cm *containerManager) runCommand(command []string) (int, error) {
+// envVars is a slice of environment variables in KEY=VALUE format
+func (cm *containerManager) runCommand(command []string, envVars []string) (int, error) {
 	// Check if container is already running
 	running, err := cm.docker.isContainerRunning(cm.containerName)
 	if err != nil {
@@ -239,7 +296,7 @@ func (cm *containerManager) runCommand(command []string) (int, error) {
 	}
 
 	// Calculate the working directory in the container
-	workDir := "/workspace"
+	workDir := cm.config.WorkDir
 
 	// Get current working directory
 	cwd, err := os.Getwd()
@@ -269,14 +326,41 @@ func (cm *containerManager) runCommand(command []string) (int, error) {
 
 	// If we're in a subdirectory, use that in the container
 	if relPath != "." && !filepath.IsAbs(relPath) && relPath != ".." && !filepath.HasPrefix(relPath, "..") {
-		workDir = filepath.Join("/workspace", relPath)
+		workDir = filepath.Join(cm.config.WorkDir, relPath)
 	}
 
 	// Check if stdin is a TTY
 	isTTY := term.IsTerminal(os.Stdin.Fd())
 
+	// If TTY mode, set terminal to raw mode and handle resize
+	var oldState *term.State
+	if isTTY {
+		// Save current terminal state
+		oldState, err = term.SaveState(os.Stdin.Fd())
+		if err != nil {
+			return 0, fmt.Errorf("failed to save terminal state: %w", err)
+		}
+
+		// Ensure terminal is restored on exit
+		defer func() {
+			if oldState != nil {
+				_ = term.RestoreTerminal(os.Stdin.Fd(), oldState)
+			}
+		}()
+
+		// Put terminal into raw mode
+		if _, err := term.MakeRaw(os.Stdin.Fd()); err != nil {
+			return 0, fmt.Errorf("failed to set terminal to raw mode: %w", err)
+		}
+	}
+
 	// Wrap the command with /iso in-env run to handle pre/post scripts
 	wrappedCommand := append([]string{"/iso", "in-env", "run"}, command...)
+
+	// Build exec environment (include ISO_WORKDIR for the in-env command)
+	execEnv := append([]string{
+		fmt.Sprintf("ISO_WORKDIR=%s", cm.config.WorkDir),
+	}, envVars...)
 
 	// Execute the command in the container
 	execConfig := container.ExecOptions{
@@ -286,6 +370,7 @@ func (cm *containerManager) runCommand(command []string) (int, error) {
 		AttachStdin:  true, // Always attach stdin
 		Tty:          isTTY,
 		WorkingDir:   workDir,
+		Env:          execEnv,
 	}
 
 	execResp, err := cm.docker.client.ContainerExecCreate(cm.docker.ctx, containerID, execConfig)
@@ -301,6 +386,43 @@ func (cm *containerManager) runCommand(command []string) (int, error) {
 		return 0, fmt.Errorf("failed to attach to exec: %w", err)
 	}
 	defer attachResp.Close()
+
+	// If TTY mode, set terminal size and monitor for resize events
+	if isTTY {
+		// Get current terminal size
+		winsize, err := term.GetWinsize(os.Stdin.Fd())
+		if err == nil {
+			// Resize the exec session to match local terminal
+			if err := cm.docker.client.ContainerExecResize(cm.docker.ctx, execResp.ID, container.ResizeOptions{
+				Height: uint(winsize.Height),
+				Width:  uint(winsize.Width),
+			}); err != nil {
+				slog.Warn("failed to set initial terminal size", "error", err)
+			}
+		}
+
+		// Monitor for terminal resize events using SIGWINCH
+		go func() {
+			sigChan := make(chan os.Signal, 1)
+			signal.Notify(sigChan, syscall.SIGWINCH)
+			defer signal.Stop(sigChan)
+
+			for {
+				select {
+				case <-sigChan:
+					// Terminal was resized, update container
+					if ws, err := term.GetWinsize(os.Stdin.Fd()); err == nil {
+						_ = cm.docker.client.ContainerExecResize(cm.docker.ctx, execResp.ID, container.ResizeOptions{
+							Height: uint(ws.Height),
+							Width:  uint(ws.Width),
+						})
+					}
+				case <-cm.docker.ctx.Done():
+					return
+				}
+			}
+		}()
+	}
 
 	// Copy stdin in background
 	go func() {
@@ -379,6 +501,24 @@ func (cm *containerManager) stopContainer() error {
 	// Stop all services
 	if err := cm.stopAllServices(); err != nil {
 		return err
+	}
+
+	// Remove volumes
+	for _, volumePath := range cm.config.Volumes {
+		volumeName := cm.getVolumeNameForPath(volumePath)
+
+		exists, err := cm.docker.volumeExists(volumeName)
+		if err != nil {
+			slog.Warn("failed to check volume existence", "volume", volumeName, "error", err)
+			continue
+		}
+
+		if exists {
+			slog.Debug("removing volume", "volume", volumeName, "path", volumePath)
+			if err := cm.docker.removeVolume(volumeName); err != nil {
+				slog.Warn("failed to remove volume", "volume", volumeName, "error", err)
+			}
+		}
 	}
 
 	return nil

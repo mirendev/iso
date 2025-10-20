@@ -63,6 +63,31 @@ func run() error {
 	return dispatcher.Execute(os.Args[1:])
 }
 
+// isValidEnvVarName checks if a string is a valid environment variable name
+// Valid names contain only uppercase letters, lowercase letters, digits, and underscores
+// and must start with a letter or underscore
+func isValidEnvVarName(name string) bool {
+	if len(name) == 0 {
+		return false
+	}
+
+	// First character must be a letter or underscore
+	firstChar := name[0]
+	if !((firstChar >= 'a' && firstChar <= 'z') || (firstChar >= 'A' && firstChar <= 'Z') || firstChar == '_') {
+		return false
+	}
+
+	// Remaining characters must be letters, digits, or underscores
+	for i := 1; i < len(name); i++ {
+		c := name[i]
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
+			return false
+		}
+	}
+
+	return true
+}
+
 // registerRunCommand registers the 'run' command
 func registerRunCommand(dispatcher *mflags.Dispatcher) {
 	fs := mflags.NewFlagSet("run")
@@ -75,13 +100,34 @@ func registerRunCommand(dispatcher *mflags.Dispatcher) {
 		// Unknown flags come after positional args
 		command := append(args, fs.UnknownFlags()...)
 
+		// Parse environment variables from the command
+		// Environment variables are KEY=VALUE at the start of the command
+		var envVars []string
+		var actualCommand []string
+
+		for i, arg := range command {
+			// Check if this looks like an environment variable (KEY=VALUE)
+			if strings.Contains(arg, "=") && !strings.HasPrefix(arg, "-") {
+				// Additional validation: check if it's at the start or after other env vars
+				// and the part before = looks like a valid variable name
+				parts := strings.SplitN(arg, "=", 2)
+				if len(parts) == 2 && isValidEnvVarName(parts[0]) {
+					envVars = append(envVars, arg)
+					continue
+				}
+			}
+			// Everything else is part of the actual command
+			actualCommand = command[i:]
+			break
+		}
+
 		client, err := iso.New()
 		if err != nil {
 			return err
 		}
 		defer client.Close()
 
-		exitCode, err := client.Run(command)
+		exitCode, err := client.Run(actualCommand, envVars)
 		if err != nil {
 			return err
 		}
@@ -204,6 +250,19 @@ func registerStatusCommand(dispatcher *mflags.Dispatcher) {
 	dispatcher.Dispatch("status", cmd)
 }
 
+// reapZombies reaps any zombie child processes
+func reapZombies() {
+	for {
+		var wstatus syscall.WaitStatus
+		pid, err := syscall.Wait4(-1, &wstatus, syscall.WNOHANG, nil)
+		if err != nil || pid <= 0 {
+			// No more children to reap
+			break
+		}
+		slog.Debug("reaped child process", "pid", pid, "exit_status", wstatus.ExitStatus())
+	}
+}
+
 // registerInitCommand registers the 'init' command
 func registerInitCommand(dispatcher *mflags.Dispatcher) {
 	fs := mflags.NewFlagSet("init")
@@ -211,27 +270,33 @@ func registerInitCommand(dispatcher *mflags.Dispatcher) {
 	handler := func(fs *mflags.FlagSet, args []string) error {
 		// Set up signal handling
 		sigChan := make(chan os.Signal, 1)
-		signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT)
+		signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT, syscall.SIGCHLD)
 
 		slog.Info("init process started, waiting for signals")
 
-		// Sleep loop
+		// Sleep loop with zombie reaping
 		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
 
 		for {
 			select {
 			case sig := <-sigChan:
-				slog.Info("received signal, exiting", "signal", sig)
-				return nil
+				if sig == syscall.SIGCHLD {
+					// Reap zombie processes
+					reapZombies()
+				} else {
+					slog.Info("received signal, exiting", "signal", sig)
+					return nil
+				}
 			case <-ticker.C:
-				// Continue sleeping
+				// Periodically reap zombies in case we missed a SIGCHLD
+				reapZombies()
 			}
 		}
 	}
 
 	cmd := mflags.NewCommand(fs, handler,
-		mflags.WithUsage("Run as init process in container (sleep loop with signal handling)"),
+		mflags.WithUsage("Run as init process in container (sleep loop with signal handling and zombie reaping)"),
 	)
 
 	dispatcher.Dispatch("init", cmd)
@@ -249,9 +314,9 @@ func waitForServices(isoServices string) error {
 
 		host := parts[0]
 		port := parts[1]
-		address := fmt.Sprintf("%s:%s", host, port)
+		address := net.JoinHostPort(host, port)
 
-		slog.Info("waiting for service", "service", host, "address", address)
+		slog.Debug("waiting for service", "service", host, "address", address)
 
 		// Try to connect with retries
 		maxAttempts := 30
@@ -259,7 +324,7 @@ func waitForServices(isoServices string) error {
 			conn, err := net.DialTimeout("tcp", address, 1*time.Second)
 			if err == nil {
 				conn.Close()
-				slog.Info("service ready", "service", host, "address", address)
+				slog.Debug("service ready", "service", host, "address", address)
 				break
 			}
 
@@ -287,6 +352,12 @@ func registerInEnvCommand(dispatcher *mflags.Dispatcher) {
 			return fmt.Errorf("no command specified")
 		}
 
+		// Get workdir from environment (defaults to /workspace)
+		workDir := os.Getenv("ISO_WORKDIR")
+		if workDir == "" {
+			workDir = "/workspace"
+		}
+
 		// Wait for services to be ready if ISO_SERVICES is set
 		if isoServices := os.Getenv("ISO_SERVICES"); isoServices != "" {
 			if err := waitForServices(isoServices); err != nil {
@@ -295,7 +366,7 @@ func registerInEnvCommand(dispatcher *mflags.Dispatcher) {
 		}
 
 		// Execute pre-run.sh if it exists
-		preRunScript := "/workspace/.iso/pre-run.sh"
+		preRunScript := fmt.Sprintf("%s/.iso/pre-run.sh", workDir)
 		if _, err := os.Stat(preRunScript); err == nil {
 			// Script exists, execute it
 			cmd := exec.Command("bash", preRunScript)
@@ -327,7 +398,7 @@ func registerInEnvCommand(dispatcher *mflags.Dispatcher) {
 		}
 
 		// Execute post-run.sh if it exists
-		postRunScript := "/workspace/.iso/post-run.sh"
+		postRunScript := fmt.Sprintf("%s/.iso/post-run.sh", workDir)
 		if _, err := os.Stat(postRunScript); err == nil {
 			// Script exists, execute it
 			cmd := exec.Command("bash", postRunScript)

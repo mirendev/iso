@@ -29,12 +29,13 @@ func (c *Client) Close() error {
 }
 
 // Run executes a command in the isolated environment and returns the exit code
-func (c *Client) Run(command []string) (int, error) {
+// envVars is a slice of environment variables in KEY=VALUE format
+func (c *Client) Run(command []string, envVars []string) (int, error) {
 	if len(command) == 0 {
 		return 0, fmt.Errorf("no command specified")
 	}
 
-	return c.containerManager.runCommand(command)
+	return c.containerManager.runCommand(command, envVars)
 }
 
 // Start starts all services with verbose output

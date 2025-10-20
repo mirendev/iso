@@ -11,6 +11,7 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
+	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/archive"
 )
@@ -225,5 +226,37 @@ func (d *dockerClient) pullImage(imageName string) error {
 		return fmt.Errorf("failed to read pull output: %w", err)
 	}
 
+	return nil
+}
+
+// createVolume creates a Docker volume
+func (d *dockerClient) createVolume(volumeName string) error {
+	_, err := d.client.VolumeCreate(d.ctx, volume.CreateOptions{
+		Name: volumeName,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create volume: %w", err)
+	}
+	return nil
+}
+
+// volumeExists checks if a Docker volume exists
+func (d *dockerClient) volumeExists(volumeName string) (bool, error) {
+	_, err := d.client.VolumeInspect(d.ctx, volumeName)
+	if err != nil {
+		if client.IsErrNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to inspect volume: %w", err)
+	}
+	return true, nil
+}
+
+// removeVolume removes a Docker volume
+func (d *dockerClient) removeVolume(volumeName string) error {
+	err := d.client.VolumeRemove(d.ctx, volumeName, true)
+	if err != nil {
+		return fmt.Errorf("failed to remove volume: %w", err)
+	}
 	return nil
 }

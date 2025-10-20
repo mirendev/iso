@@ -21,3 +21,11 @@ task build {
   mkdir -p bin
   CGO_ENABLED=0 go build -o bin/iso ./cmd/iso
 }
+
+task install => build {
+  # Install iso binary to user's bin directory
+  @echo "Installing iso to ~/bin/iso..."
+  mkdir -p ~/bin
+  install -m 755 bin/iso ~/bin/iso
+  @echo "Installed successfully to ~/bin/iso"
+}
