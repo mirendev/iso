@@ -30,11 +30,14 @@ go install miren.dev/quake@latest
 # Build using quake
 quake build
 
+# Install to ~/bin
+quake install
+
 # Or build directly
 go build -o bin/iso ./cmd/iso
 ```
 
-Or install it:
+Or install via go:
 
 ```bash
 go install miren.dev/iso/cmd/iso@latest
