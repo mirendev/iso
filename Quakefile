@@ -13,7 +13,9 @@ task build {
   gzip -9 -f build/iso-linux-arm64
 
   @echo "Zeroing out current architecture binary (will use os.Executable)..."
-  if [ "$(go env GOOS)" = "linux" ]; then : | gzip > build/iso-linux-$(go env GOARCH).gz; fi
+  if [ "$(go env GOOS)" = "linux" ]; then
+  |   : | gzip > build/iso-linux-$(go env GOARCH).gz;
+  | fi
 
   @echo "Building iso..."
   mkdir -p bin
