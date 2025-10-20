@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
@@ -113,11 +114,26 @@ func (cm *containerManager) startContainer() (string, error) {
 		return "", fmt.Errorf("failed to get executable path: %w", err)
 	}
 
+	// Build ISO_SERVICES environment variable from services with ports
+	var isoServices []string
+	for serviceName, serviceConfig := range cm.services {
+		if serviceConfig.Port > 0 {
+			isoServices = append(isoServices, fmt.Sprintf("%s:%d", serviceName, serviceConfig.Port))
+		}
+	}
+
+	// Create container environment
+	env := []string{}
+	if len(isoServices) > 0 {
+		env = append(env, fmt.Sprintf("ISO_SERVICES=%s", strings.Join(isoServices, ",")))
+	}
+
 	// Create container
 	config := &container.Config{
 		Image:      cm.imageName,
 		WorkingDir: "/workspace",
 		Cmd:        []string{"/iso", "init"},
+		Env:        env,
 	}
 
 	hostConfig := &container.HostConfig{

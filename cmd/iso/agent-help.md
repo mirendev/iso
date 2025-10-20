@@ -43,15 +43,17 @@ Optional file defining service containers (databases, caches, etc.). Services wi
 - Start automatically when running commands
 - Be accessible via DNS using their service name
 - Share a Docker network with the main container
+- Wait for readiness if a `port` is specified
 
 Format:
 ```yaml
 services:
   mysql:
     image: mysql:8.0
-    command:                          # Optional: Override container command
+    port: 3306                            # Optional: Wait for this port to be ready
+    command:                              # Optional: Override container command
       - --default-authentication-plugin=mysql_native_password
-    environment:                       # Optional: Environment variables
+    environment:                          # Optional: Environment variables
       MYSQL_ROOT_PASSWORD: rootpass
       MYSQL_DATABASE: testdb
       MYSQL_USER: testuser
@@ -59,17 +61,20 @@ services:
 
   redis:
     image: redis:alpine
+    port: 6379                            # Optional: Wait for this port to be ready
     environment:
       REDIS_PASSWORD: secret
 ```
+
+**Service Readiness**: When a service specifies a `port`, ISO will automatically wait for that service to be reachable on that port before running commands. This eliminates the need for manual wait loops in pre-run.sh scripts.
 
 ### .iso/pre-run.sh and .iso/post-run.sh
 
 Optional shell scripts that run automatically before and after every `iso run` command:
 
 **pre-run.sh**:
-- Executes before your command runs
-- Useful for setup tasks like waiting for services, running migrations, or checking prerequisites
+- Executes before your command runs (after service readiness checks)
+- Useful for setup tasks like running migrations or checking prerequisites
 - If the script exits with a non-zero code, the main command is aborted
 - Runs in the same working directory as your command
 
@@ -82,12 +87,9 @@ Optional shell scripts that run automatically before and after every `iso run` c
 Example pre-run.sh:
 ```bash
 #!/bin/bash
-# Wait for MySQL to be ready
-until mysql -h mysql -u testuser -ptestpass -e "SELECT 1" > /dev/null 2>&1; do
-  echo "Waiting for MySQL..."
-  sleep 1
-done
-echo "MySQL is ready"
+# Run database migrations (services are already ready)
+mysql -h mysql -u testuser -ptestpass testdb < /workspace/migrations/schema.sql
+echo "Migrations complete"
 ```
 
 Example post-run.sh:
@@ -123,10 +125,11 @@ Example: If your project is in `/home/user/myapp`:
 Run a command in the isolated container. The container will:
 1. Start any defined services (if not already running)
 2. Start the main container (building the image if needed)
-3. Execute `.iso/pre-run.sh` if it exists (aborts if it fails)
-4. Execute your command in the correct working directory
-5. Execute `.iso/post-run.sh` if it exists (failure logged but doesn't affect exit code)
-6. Forward stdin/stdout/stderr transparently
+3. Wait for services to be ready (if ports are specified)
+4. Execute `.iso/pre-run.sh` if it exists (aborts if it fails)
+5. Execute your command in the correct working directory
+6. Execute `.iso/post-run.sh` if it exists (failure logged but doesn't affect exit code)
+7. Forward stdin/stdout/stderr transparently
 
 Examples:
 ```bash
@@ -243,8 +246,9 @@ iso run <your-command>
 6. **Persistent containers**: Containers persist between commands for faster startup
 7. **Network isolation**: Each project gets its own isolated network
 8. **Clean shutdown**: Use `iso stop` to clean up all resources
-9. **Pre/Post hooks**: Use `.iso/pre-run.sh` for service readiness checks and `.iso/post-run.sh` for cleanup tasks
-10. **Hook executability**: Remember to make hook scripts executable with `chmod +x`
+9. **Service readiness**: Add `port` to services in `services.yml` for automatic readiness checks - no manual wait loops needed
+10. **Pre/Post hooks**: Use `.iso/pre-run.sh` for migrations/setup and `.iso/post-run.sh` for cleanup tasks
+11. **Hook executability**: Remember to make hook scripts executable with `chmod +x`
 
 ## Troubleshooting
 

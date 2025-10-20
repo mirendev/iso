@@ -13,6 +13,7 @@ type ServiceConfig struct {
 	Image       string            `yaml:"image"`
 	Environment map[string]string `yaml:"environment"`
 	Command     []string          `yaml:"command,omitempty"`
+	Port        int               `yaml:"port,omitempty"`
 }
 
 // ServicesFile represents the structure of services.yml

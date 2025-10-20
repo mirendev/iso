@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -235,6 +237,43 @@ func registerInitCommand(dispatcher *mflags.Dispatcher) {
 	dispatcher.Dispatch("init", cmd)
 }
 
+// waitForServices waits for all services in ISO_SERVICES to be reachable
+func waitForServices(isoServices string) error {
+	services := strings.Split(isoServices, ",")
+
+	for _, serviceSpec := range services {
+		parts := strings.Split(serviceSpec, ":")
+		if len(parts) != 2 {
+			return fmt.Errorf("invalid service spec: %s (expected format: service:port)", serviceSpec)
+		}
+
+		host := parts[0]
+		port := parts[1]
+		address := fmt.Sprintf("%s:%s", host, port)
+
+		slog.Info("waiting for service", "service", host, "address", address)
+
+		// Try to connect with retries
+		maxAttempts := 30
+		for attempt := 1; attempt <= maxAttempts; attempt++ {
+			conn, err := net.DialTimeout("tcp", address, 1*time.Second)
+			if err == nil {
+				conn.Close()
+				slog.Info("service ready", "service", host, "address", address)
+				break
+			}
+
+			if attempt == maxAttempts {
+				return fmt.Errorf("service %s not ready after %d attempts", host, maxAttempts)
+			}
+
+			time.Sleep(1 * time.Second)
+		}
+	}
+
+	return nil
+}
+
 // registerInEnvCommand registers the 'in-env' command with subcommands
 func registerInEnvCommand(dispatcher *mflags.Dispatcher) {
 	// Create a sub-dispatcher for in-env subcommands
@@ -250,6 +289,13 @@ func registerInEnvCommand(dispatcher *mflags.Dispatcher) {
 
 		if len(command) == 0 {
 			return fmt.Errorf("no command specified")
+		}
+
+		// Wait for services to be ready if ISO_SERVICES is set
+		if isoServices := os.Getenv("ISO_SERVICES"); isoServices != "" {
+			if err := waitForServices(isoServices); err != nil {
+				return err
+			}
 		}
 
 		// Execute pre-run.sh if it exists
