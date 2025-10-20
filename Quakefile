@@ -5,6 +5,10 @@ task build {
   GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -tags linux_build -o iso-linux-amd64 ./cmd/iso
   GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -tags linux_build -o iso-linux-arm64 ./cmd/iso
 
+  @echo "Compressing Linux binaries..."
+  gzip -9 -f iso-linux-amd64
+  gzip -9 -f iso-linux-arm64
+
   @echo "Building iso..."
   CGO_ENABLED=0 go build -o bin/iso ./cmd/iso
 }
