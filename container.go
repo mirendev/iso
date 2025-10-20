@@ -158,97 +158,6 @@ func (cm *containerManager) startContainer() (string, error) {
 	return resp.ID, nil
 }
 
-// executeScript executes a script in the container if it exists
-// Returns true if the script was executed, the exit code, and any error
-func (cm *containerManager) executeScript(containerID, scriptPath, workDir string) (bool, int, error) {
-	// Check if script exists in the container
-	checkCmd := []string{"test", "-f", scriptPath}
-	checkExecConfig := container.ExecOptions{
-		Cmd:          checkCmd,
-		AttachStdout: false,
-		AttachStderr: false,
-		WorkingDir:   workDir,
-	}
-
-	checkResp, err := cm.docker.client.ContainerExecCreate(cm.docker.ctx, containerID, checkExecConfig)
-	if err != nil {
-		return false, 0, fmt.Errorf("failed to check if script exists: %w", err)
-	}
-
-	if err := cm.docker.client.ContainerExecStart(cm.docker.ctx, checkResp.ID, container.ExecStartOptions{}); err != nil {
-		return false, 0, fmt.Errorf("failed to check if script exists: %w", err)
-	}
-
-	checkInspect, err := cm.docker.client.ContainerExecInspect(cm.docker.ctx, checkResp.ID)
-	if err != nil {
-		return false, 0, fmt.Errorf("failed to inspect script check: %w", err)
-	}
-
-	// If script doesn't exist, return early
-	if checkInspect.ExitCode != 0 {
-		return false, 0, nil
-	}
-
-	// Script exists, execute it
-	execCmd := []string{"bash", scriptPath}
-
-	// Check if stdin is a TTY
-	isTTY := term.IsTerminal(os.Stdin.Fd())
-
-	execConfig := container.ExecOptions{
-		Cmd:          execCmd,
-		AttachStdout: true,
-		AttachStderr: true,
-		AttachStdin:  false,
-		Tty:          isTTY,
-		WorkingDir:   workDir,
-	}
-
-	execResp, err := cm.docker.client.ContainerExecCreate(cm.docker.ctx, containerID, execConfig)
-	if err != nil {
-		return true, 0, fmt.Errorf("failed to create exec for script: %w", err)
-	}
-
-	// Attach to the exec instance
-	attachResp, err := cm.docker.client.ContainerExecAttach(cm.docker.ctx, execResp.ID, container.ExecStartOptions{
-		Tty: isTTY,
-	})
-	if err != nil {
-		return true, 0, fmt.Errorf("failed to attach to script exec: %w", err)
-	}
-	defer attachResp.Close()
-
-	// Copy output
-	outputDone := make(chan error, 1)
-	go func() {
-		var err error
-		if isTTY {
-			_, err = io.Copy(os.Stdout, attachResp.Conn)
-		} else {
-			_, err = io.Copy(os.Stdout, attachResp.Reader)
-		}
-		outputDone <- err
-	}()
-
-	// Wait for output to finish
-	select {
-	case err := <-outputDone:
-		if err != nil && err != io.EOF {
-			return true, 0, fmt.Errorf("failed to read script output: %w", err)
-		}
-	case <-cm.docker.ctx.Done():
-		return true, 0, cm.docker.ctx.Err()
-	}
-
-	// Check exit code
-	inspectResp, err := cm.docker.client.ContainerExecInspect(cm.docker.ctx, execResp.ID)
-	if err != nil {
-		return true, 0, fmt.Errorf("failed to inspect script exec: %w", err)
-	}
-
-	return true, inspectResp.ExitCode, nil
-}
-
 // runCommand runs a command in the container and returns the exit code
 func (cm *containerManager) runCommand(command []string) (int, error) {
 	// Check if container is already running
@@ -339,22 +248,15 @@ func (cm *containerManager) runCommand(command []string) (int, error) {
 		workDir = filepath.Join("/workspace", relPath)
 	}
 
-	// Execute pre-run.sh if it exists
-	preRunScript := "/workspace/.iso/pre-run.sh"
-	executed, exitCode, err := cm.executeScript(containerID, preRunScript, workDir)
-	if err != nil {
-		return 0, fmt.Errorf("failed to execute pre-run.sh: %w", err)
-	}
-	if executed && exitCode != 0 {
-		return exitCode, fmt.Errorf("pre-run.sh exited with code %d", exitCode)
-	}
-
 	// Check if stdin is a TTY
 	isTTY := term.IsTerminal(os.Stdin.Fd())
 
+	// Wrap the command with /iso in-env run to handle pre/post scripts
+	wrappedCommand := append([]string{"/iso", "in-env", "run"}, command...)
+
 	// Execute the command in the container
 	execConfig := container.ExecOptions{
-		Cmd:          command,
+		Cmd:          wrappedCommand,
 		AttachStdout: true,
 		AttachStderr: true,
 		AttachStdin:  true, // Always attach stdin
@@ -415,18 +317,7 @@ func (cm *containerManager) runCommand(command []string) (int, error) {
 		return 0, fmt.Errorf("failed to inspect exec: %w", err)
 	}
 
-	mainExitCode := inspectResp.ExitCode
-
-	// Execute post-run.sh if it exists
-	postRunScript := "/workspace/.iso/post-run.sh"
-	executed, postExitCode, err := cm.executeScript(containerID, postRunScript, workDir)
-	if err != nil {
-		slog.Warn("failed to execute post-run.sh", "error", err)
-	} else if executed && postExitCode != 0 {
-		slog.Warn("post-run.sh exited with non-zero code", "exit_code", postExitCode)
-	}
-
-	return mainExitCode, nil
+	return inspectResp.ExitCode, nil
 }
 
 // stopContainer stops and removes the container

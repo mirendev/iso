@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
 	"syscall"
 	"time"
@@ -53,6 +54,7 @@ func run() error {
 	registerStopCommand(dispatcher)
 	registerStatusCommand(dispatcher)
 	registerInitCommand(dispatcher)
+	registerInEnvCommand(dispatcher)
 	registerAgentHelpCommand(dispatcher)
 
 	// Execute the dispatcher
@@ -231,6 +233,100 @@ func registerInitCommand(dispatcher *mflags.Dispatcher) {
 	)
 
 	dispatcher.Dispatch("init", cmd)
+}
+
+// registerInEnvCommand registers the 'in-env' command with subcommands
+func registerInEnvCommand(dispatcher *mflags.Dispatcher) {
+	// Create a sub-dispatcher for in-env subcommands
+	inEnvDispatcher := mflags.NewDispatcher("in-env")
+
+	// Register the 'run' subcommand
+	runFS := mflags.NewFlagSet("run")
+	runFS.AllowUnknownFlags(true)
+
+	runHandler := func(fs *mflags.FlagSet, args []string) error {
+		// Combine positional args and unknown flags to form the command
+		command := append(args, fs.UnknownFlags()...)
+
+		if len(command) == 0 {
+			return fmt.Errorf("no command specified")
+		}
+
+		// Execute pre-run.sh if it exists
+		preRunScript := "/workspace/.iso/pre-run.sh"
+		if _, err := os.Stat(preRunScript); err == nil {
+			// Script exists, execute it
+			cmd := exec.Command("bash", preRunScript)
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			cmd.Stdin = os.Stdin
+
+			if err := cmd.Run(); err != nil {
+				if exitErr, ok := err.(*exec.ExitError); ok {
+					return &ExitError{Code: exitErr.ExitCode()}
+				}
+				return fmt.Errorf("failed to execute pre-run.sh: %w", err)
+			}
+		}
+
+		// Execute the main command
+		mainCmd := exec.Command(command[0], command[1:]...)
+		mainCmd.Stdout = os.Stdout
+		mainCmd.Stderr = os.Stderr
+		mainCmd.Stdin = os.Stdin
+
+		mainExitCode := 0
+		if err := mainCmd.Run(); err != nil {
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				mainExitCode = exitErr.ExitCode()
+			} else {
+				return fmt.Errorf("failed to execute command: %w", err)
+			}
+		}
+
+		// Execute post-run.sh if it exists
+		postRunScript := "/workspace/.iso/post-run.sh"
+		if _, err := os.Stat(postRunScript); err == nil {
+			// Script exists, execute it
+			cmd := exec.Command("bash", postRunScript)
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			cmd.Stdin = os.Stdin
+
+			if err := cmd.Run(); err != nil {
+				if exitErr, ok := err.(*exec.ExitError); ok {
+					slog.Warn("post-run.sh exited with non-zero code", "exit_code", exitErr.ExitCode())
+				} else {
+					slog.Warn("failed to execute post-run.sh", "error", err)
+				}
+			}
+		}
+
+		// Return the main command's exit code
+		if mainExitCode != 0 {
+			return &ExitError{Code: mainExitCode}
+		}
+
+		return nil
+	}
+
+	runCmd := mflags.NewCommand(runFS, runHandler,
+		mflags.WithUsage("Run a command with pre/post hooks (internal use inside container)"),
+	)
+
+	inEnvDispatcher.Dispatch("run", runCmd)
+
+	// Register the in-env dispatcher as a command
+	inEnvFS := mflags.NewFlagSet("in-env")
+	inEnvHandler := func(fs *mflags.FlagSet, args []string) error {
+		return inEnvDispatcher.Execute(args)
+	}
+
+	inEnvCmd := mflags.NewCommand(inEnvFS, inEnvHandler,
+		mflags.WithUsage("Internal commands for use inside container"),
+	)
+
+	dispatcher.Dispatch("in-env", inEnvCmd)
 }
 
 // registerAgentHelpCommand registers the 'agent-help' command
