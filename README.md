@@ -4,19 +4,26 @@
 
 ## Features
 
-- **Docker Compose Support**: Use docker-compose files in addition to Dockerfiles
+- **Service Support**: Define additional services (databases, caches, etc.) in `.iso/services.yml`
 - **Automatic Container Management**: Detects if a container is already running and reuses it
 - **Automatic Image Building**: Builds Docker images from Dockerfiles when needed
-- **Simple CLI Interface**: Uses `miren.dev/mflags` for command-line parsing
+- **Pre/Post-run Hooks**: Execute setup and teardown scripts automatically
+- **Service Readiness Checks**: Wait for services to be ready before running commands
+- **Simple CLI Interface**: Clean command-line interface for common tasks
 - **Workspace Mounting**: Automatically mounts the current directory into the container at `/workspace`
 - **Exit Code Mirroring**: Mirrors container exit codes for proper CI/CD integration
+- **Cross-platform**: Works on macOS, Windows, and Linux with embedded Linux binaries
 
 ## Installation
 
 ### As a CLI Tool
 
 ```bash
-go build -o iso ./cmd/iso
+# Build using quake
+quake build
+
+# Or build directly
+go build -o bin/iso ./cmd/iso
 ```
 
 Or install it:
@@ -38,7 +45,7 @@ go get miren.dev/iso
 Run a command in the isolated environment:
 
 ```bash
-./iso run [flags] <command> [args...]
+./iso run [command] [args...]
 ```
 
 Example:
@@ -50,15 +57,11 @@ Example:
 ./iso run grep -r "pattern" .
 ```
 
-The `--` separator is optional but still supported for compatibility:
-```bash
-./iso run -- ls -la
-```
-
 The first time you run a command, `iso` will:
 1. Build the Docker image from your Dockerfile (if not already built)
-2. Start a new container
-3. Execute your command inside the container
+2. Start any services defined in services.yml
+3. Start the main container
+4. Execute your command inside the container
 
 Subsequent runs will reuse the existing container for faster execution.
 
@@ -85,7 +88,7 @@ View the current status of the image and container:
 
 ### Stop the Container
 
-Stop and remove the container (image is preserved):
+Stop and remove the container and services (image is preserved):
 
 ```bash
 ./iso stop
@@ -93,46 +96,24 @@ Stop and remove the container (image is preserved):
 
 ## Configuration
 
-### Using Docker Compose
+### Project Structure
 
-`iso` now supports docker-compose files as an alternative to Dockerfiles:
+Create a `.iso/` directory in your project root:
 
-```bash
-./iso run -C docker-compose.yml -s myservice go test ./...
 ```
-
-When using compose mode:
-- `-C, --compose <path>`: Path to docker-compose.yml file
-- `-s, --service <name>`: Service name to run commands in (defaults to first service)
-- `-p, --project <name>`: Compose project name (defaults to directory name)
-
-Example docker-compose.yml:
-```yaml
-services:
-  test:
-    image: golang:1.23-alpine
-    command: /bin/sh -c "while true; do sleep 1000; done"
-    volumes:
-      - .:/workspace
-    working_dir: /workspace
-```
-
-### Using Dockerfile
-
-All commands support these flags:
-
-- `-f, --dockerfile <path>`: Path to Dockerfile (default: `Dockerfile`)
-- `-i, --image <name>`: Name of the Docker image (default: `iso-test-env`)
-- `-c, --container <name>`: Name of the container (default: `iso-test-container`)
-
-Example:
-```bash
-./iso run -f Dockerfile.test -i my-test-env -c my-container go test ./...
+myproject/
+├── .iso/
+│   ├── Dockerfile      # Main container definition
+│   ├── services.yml    # Additional services (optional)
+│   ├── pre-run.sh      # Pre-run hook (optional)
+│   └── post-run.sh     # Post-run hook (optional)
+├── src/
+└── ...
 ```
 
 ### Dockerfile
 
-Create a `Dockerfile` in your project root. Example:
+Create a `.iso/Dockerfile` in your project. Example:
 
 ```dockerfile
 FROM golang:1.23-alpine
@@ -144,30 +125,68 @@ RUN apk add --no-cache \
     curl
 
 WORKDIR /workspace
-CMD ["/bin/bash"]
 ```
 
 The tool will automatically mount your current directory to `/workspace` in the container.
+
+### Services Configuration
+
+Create a `.iso/services.yml` file to define additional services:
+
+```yaml
+services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: testdb
+      MYSQL_USER: testuser
+      MYSQL_PASSWORD: testpass
+    port: 3306  # Optional: ISO will wait for this port to be ready
+
+  redis:
+    image: redis:7-alpine
+    port: 6379
+```
+
+Services are accessible by their service name (e.g., `mysql`, `redis`) from the main container.
+
+### Pre/Post-run Hooks
+
+Create optional hook scripts in `.iso/`:
+
+**`.iso/pre-run.sh`** - Runs before each command:
+```bash
+#!/bin/bash
+echo "Setting up environment..."
+# Database migrations, cache warming, etc.
+```
+
+**`.iso/post-run.sh`** - Runs after each command:
+```bash
+#!/bin/bash
+echo "Cleaning up..."
+# Cleanup temporary files, reset database, etc.
+```
 
 ## How It Works
 
 1. **Container Detection**: Checks if a container with the specified name is already running
 2. **Image Building**: If no image exists, builds it from the Dockerfile
-3. **Container Lifecycle**:
+3. **Service Management**: Starts and monitors services defined in services.yml
+4. **Container Lifecycle**:
    - If container is running: executes command directly inside it
    - If container exists but stopped: starts it and executes command
    - If container doesn't exist: creates a new one and executes command
-4. **Command Execution**: Uses `docker exec` to run commands inside the container
+5. **Command Execution**: Uses the embedded Linux binary inside the container to handle pre/post hooks
 
 ## Example Workflow
-
-### CLI Usage with Dockerfile
 
 ```bash
 # Check status (nothing exists yet)
 ./iso status
 
-# Run tests (builds image, creates container, runs tests)
+# Run tests (builds image, starts services, creates container, runs tests)
 ./iso run go test ./...
 
 # Run another command (reuses existing container)
@@ -176,35 +195,14 @@ The tool will automatically mount your current directory to `/workspace` in the 
 # List files in the workspace
 ./iso run ls -la
 
-# Check status (shows running container)
+# Check status (shows running container and services)
 ./iso status
 
-# Stop the container when done
+# Stop everything when done
 ./iso stop
 ```
 
-### CLI Usage with Docker Compose
-
-```bash
-# Check status (nothing exists yet)
-./iso status -C docker-compose.yml -s test
-
-# Run tests (starts compose stack, runs tests)
-./iso run -C docker-compose.yml -s test go test ./...
-
-# Run another command (reuses existing container)
-./iso run -C docker-compose.yml -s test go build
-
-# Check status (shows running container)
-./iso status -C docker-compose.yml -s test
-
-# Stop the compose stack when done
-./iso stop -C docker-compose.yml -s test
-```
-
-### Library Usage
-
-#### Using Dockerfile
+## Library Usage
 
 ```go
 package main
@@ -217,11 +215,9 @@ import (
 )
 
 func main() {
-    // Create a new ISO client with Dockerfile
+    // Create a new ISO client
     client, err := iso.New(iso.Options{
-        DockerfilePath: "Dockerfile",
-        ImageName:      "my-test-env",
-        ContainerName:  "my-container",
+        IsoDir: ".iso",  // Directory containing Dockerfile and services.yml
     })
     if err != nil {
         log.Fatal(err)
@@ -248,50 +244,6 @@ func main() {
 }
 ```
 
-#### Using Docker Compose
-
-```go
-package main
-
-import (
-    "fmt"
-    "log"
-
-    "miren.dev/iso"
-)
-
-func main() {
-    // Create a new ISO client with docker-compose
-    client, err := iso.New(iso.Options{
-        ComposePath: "docker-compose.yml",
-        ServiceName: "test",
-        ProjectName: "myproject",
-    })
-    if err != nil {
-        log.Fatal(err)
-    }
-    defer client.Close()
-
-    // Run a command
-    exitCode, err := client.Run([]string{"go", "test", "./..."})
-    if err != nil {
-        log.Fatal(err)
-    }
-    if exitCode != 0 {
-        log.Fatalf("Command failed with exit code %d", exitCode)
-    }
-
-    // Check status
-    status, err := client.Status()
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    fmt.Printf("Image: %s\n", status.ImageName)
-    fmt.Printf("Container state: %s\n", status.ContainerState)
-}
-```
-
 ## Project Structure
 
 ```
@@ -299,11 +251,13 @@ iso/
 ├── iso.go              # Public API
 ├── docker.go           # Docker client wrapper (internal)
 ├── container.go        # Container management (internal)
-├── compose.go          # Docker compose management (internal)
+├── services.go         # Service management (internal)
+├── embedded_binary.go  # Cross-platform binary embedding
 ├── cmd/
 │   └── iso/
-│       └── main.go    # CLI implementation
-├── Dockerfile         # Example test environment
+│       └── main.go     # CLI implementation
+├── testdata/           # Example MySQL integration test
+├── Quakefile          # Build configuration
 ├── go.mod
 └── README.md
 ```
@@ -319,4 +273,4 @@ iso/
 This tool uses:
 - `miren.dev/mflags` for CLI parsing
 - `github.com/docker/docker` for Docker API access
-- `github.com/compose-spec/compose-go` for Docker Compose file parsing
+- `miren.dev/trifle` for logging

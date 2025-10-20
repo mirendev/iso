@@ -21,9 +21,5 @@ go.work.sum
 # Dependency directories
 vendor/
 
-# Test files
-docker-compose.test.yml
-docker-compose.build-test.yml
-
 # ISO runtime files
 startup.log

@@ -1,20 +1,18 @@
 # ISO Test Data - MySQL Integration Test
 
-This directory contains a test setup demonstrating ISO with Docker Compose and MySQL.
+This directory contains a test setup demonstrating ISO with services and MySQL.
 
 ## Setup
 
-The `.iso/docker-compose.yml` file defines two services:
+The `.iso/` directory contains:
 
-1. **shell** - A shell environment with MySQL client tools
-   - Uses the `iso init` command to keep the container running
-   - Mounts the workspace and iso binary
-   - Has environment variables for MySQL connection
+1. **Dockerfile** - Defines the main container environment with MySQL client tools
+2. **services.yml** - Defines additional services that run alongside the main container
 
-2. **mysql** - MySQL 8.0 database
-   - Automatically creates a test database and user
-   - Includes health check to ensure it's ready before shell starts
-   - Exposed on port 3306
+The services.yml defines a MySQL 8.0 service:
+- Automatically creates a test database and user
+- Includes health check to ensure it's ready before commands run
+- Available at hostname `mysql` from the main container
 
 ## Running the Test
 
@@ -41,15 +39,14 @@ From this directory (`testdata/`), run:
 
 The `test-mysql.sh` script demonstrates:
 
-- Connecting to MySQL from the shell container
+- Connecting to MySQL from the main container
 - Creating a database table
 - Inserting test data
 - Querying data
 - Running SQL commands
 
 This proves that:
-- Multi-service compose setups work with ISO
-- Service discovery works (shell can reach mysql by service name)
-- Dependencies and health checks work correctly
-- Environment variables are properly passed
-- The ISO tool can run commands in a multi-container environment
+- Multi-service setups work with ISO
+- Service discovery works (main container can reach mysql by service name)
+- Health checks and readiness work correctly
+- The ISO tool can run commands in a multi-service environment
