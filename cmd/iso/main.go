@@ -274,16 +274,12 @@ func waitForServices(isoServices string) error {
 	return nil
 }
 
-// registerInEnvCommand registers the 'in-env' command with subcommands
+// registerInEnvCommand registers the 'in-env run' command
 func registerInEnvCommand(dispatcher *mflags.Dispatcher) {
-	// Create a sub-dispatcher for in-env subcommands
-	inEnvDispatcher := mflags.NewDispatcher("in-env")
+	fs := mflags.NewFlagSet("in-env run")
+	fs.AllowUnknownFlags(true)
 
-	// Register the 'run' subcommand
-	runFS := mflags.NewFlagSet("run")
-	runFS.AllowUnknownFlags(true)
-
-	runHandler := func(fs *mflags.FlagSet, args []string) error {
+	handler := func(fs *mflags.FlagSet, args []string) error {
 		// Combine positional args and unknown flags to form the command
 		command := append(args, fs.UnknownFlags()...)
 
@@ -356,23 +352,11 @@ func registerInEnvCommand(dispatcher *mflags.Dispatcher) {
 		return nil
 	}
 
-	runCmd := mflags.NewCommand(runFS, runHandler,
+	cmd := mflags.NewCommand(fs, handler,
 		mflags.WithUsage("Run a command with pre/post hooks (internal use inside container)"),
 	)
 
-	inEnvDispatcher.Dispatch("run", runCmd)
-
-	// Register the in-env dispatcher as a command
-	inEnvFS := mflags.NewFlagSet("in-env")
-	inEnvHandler := func(fs *mflags.FlagSet, args []string) error {
-		return inEnvDispatcher.Execute(args)
-	}
-
-	inEnvCmd := mflags.NewCommand(inEnvFS, inEnvHandler,
-		mflags.WithUsage("Internal commands for use inside container"),
-	)
-
-	dispatcher.Dispatch("in-env", inEnvCmd)
+	dispatcher.Dispatch("in-env run", cmd)
 }
 
 // registerAgentHelpCommand registers the 'agent-help' command
