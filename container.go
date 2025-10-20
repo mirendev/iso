@@ -82,11 +82,11 @@ func (cm *containerManager) ensureImage() error {
 	}
 
 	if !exists {
-		slog.Info("building image", "image", cm.imageName, "dockerfile", cm.dockerfilePath)
+		slog.Debug("building image", "image", cm.imageName, "dockerfile", cm.dockerfilePath)
 		if err := cm.docker.buildImage(cm.dockerfilePath, cm.imageName); err != nil {
 			return err
 		}
-		slog.Info("image built successfully", "image", cm.imageName)
+		slog.Debug("image built successfully", "image", cm.imageName)
 	}
 
 	return nil
@@ -201,7 +201,6 @@ func (cm *containerManager) runCommand(command []string) (int, error) {
 			if err != nil {
 				return 0, err
 			}
-			slog.Info("starting existing container", "container", cm.containerName)
 			if err := cm.docker.client.ContainerStart(cm.docker.ctx, containerID, container.StartOptions{}); err != nil {
 				return 0, fmt.Errorf("failed to start container: %w", err)
 			}
@@ -217,7 +216,6 @@ func (cm *containerManager) runCommand(command []string) (int, error) {
 			}
 
 			// Start a new container
-			slog.Info("starting new container", "container", cm.containerName)
 			containerID, err = cm.startContainer()
 			if err != nil {
 				return 0, err
@@ -366,7 +364,7 @@ func (cm *containerManager) stopContainer() error {
 		return fmt.Errorf("failed to remove container: %w", err)
 	}
 
-	slog.Info("container stopped and removed", "container", cm.containerName)
+	slog.Debug("container stopped and removed", "container", cm.containerName)
 
 	// Stop all services
 	if err := cm.stopAllServices(); err != nil {
@@ -551,13 +549,13 @@ func (cm *containerManager) startAllServices(verbose bool) error {
 	// Start each service
 	for serviceName, config := range cm.services {
 		if verbose {
-			slog.Info("starting service", "service", serviceName)
+			slog.Debug("starting service", "service", serviceName)
 		}
 		if err := cm.startService(serviceName, config); err != nil {
 			return err
 		}
 		if verbose {
-			slog.Info("service started", "service", serviceName)
+			slog.Debug("service started", "service", serviceName)
 		}
 	}
 
