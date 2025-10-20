@@ -16,6 +16,14 @@
 
 ## Installation
 
+### Prerequisites
+
+This project uses [quake](https://miren.dev/quake) as its build tool. Install it first:
+
+```bash
+go install miren.dev/quake@latest
+```
+
 ### As a CLI Tool
 
 ```bash
