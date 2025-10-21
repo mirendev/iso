@@ -53,5 +53,4 @@ require (
 	go.opentelemetry.io/otel/trace v1.38.0 // indirect
 	golang.org/x/sys v0.36.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
-	miren.dev/trifle v0.0.0-20250804015409-37a9b7d4e8a0 // indirect
 )
