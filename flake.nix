@@ -10,6 +10,30 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
+
+        # Build portable Linux binaries for embedding in containers
+        buildEmbeddedBinary = targetArch: pkgs.buildGoModule {
+          pname = "iso-${targetArch}";
+          version = "0.1.0";
+          src = ./.;
+          vendorHash = "sha256-5IBN44wt6A7tguKxWeo5cvXWCaiSpgg/QZCv9yMZkRE=";
+          subPackages = [ "cmd/iso" ];
+          tags = [ "linux_build" ];
+
+          ldflags = [ "-s" "-w" ];
+
+          preBuild = ''
+            export CGO_ENABLED=0
+          '';
+
+          installPhase = ''
+            mkdir -p $out
+            cp $GOPATH/bin/iso $out/iso-linux-${targetArch}
+          '';
+        };
+
+        iso-amd64 = buildEmbeddedBinary "amd64";
+        iso-arm64 = buildEmbeddedBinary "arm64";
       in
       {
         packages.default = pkgs.buildGoModule {
@@ -18,7 +42,15 @@
           src = ./.;
           vendorHash = "sha256-5IBN44wt6A7tguKxWeo5cvXWCaiSpgg/QZCv9yMZkRE=";
           subPackages = [ "cmd/iso" ];
-          tags = [ "linux_build" ];
+
+          ldflags = [ "-s" "-w" ];
+
+          preBuild = ''
+            export CGO_ENABLED=0
+            mkdir -p build
+            gzip -c ${iso-amd64}/iso-linux-amd64 > build/iso-linux-amd64.gz
+            gzip -c ${iso-arm64}/iso-linux-arm64 > build/iso-linux-arm64.gz
+          '';
         };
 
         devShells.default = pkgs.mkShell {

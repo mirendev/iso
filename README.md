@@ -43,6 +43,26 @@ Or install via go:
 go install miren.dev/iso/cmd/iso@latest
 ```
 
+### Using Nix
+
+If you use Nix, you can install or run `iso` directly from the flake:
+
+```bash
+# Run without installing
+nix run github:mirendev/iso -- run go test ./...
+
+# Install to your profile
+nix profile install github:mirendev/iso
+
+# Add to your flake.nix as an input
+inputs.iso.url = "github:mirendev/iso";
+
+# Use in a dev shell
+nix develop github:mirendev/iso
+```
+
+The Nix build produces static binaries with embedded portable Linux binaries for container use.
+
 ### As a Library
 
 ```bash
