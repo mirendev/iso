@@ -7,13 +7,13 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/build"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
-	"github.com/docker/docker/pkg/archive"
+	"github.com/moby/go-archive"
 )
 
 // dockerClient wraps the Docker API client
@@ -61,7 +61,7 @@ func (d *dockerClient) getArchitecture() (string, error) {
 // buildImage builds a Docker image from a Dockerfile
 func (d *dockerClient) buildImage(dockerfilePath, imageName string) error {
 	// Get the directory containing the Dockerfile
-	buildContext := filepath.Dir(dockerfilePath)
+	buildContext := filepath.Dir(filepath.Dir(dockerfilePath))
 	if buildContext == "" {
 		buildContext = "."
 	}
@@ -74,9 +74,9 @@ func (d *dockerClient) buildImage(dockerfilePath, imageName string) error {
 	defer tar.Close()
 
 	// Build the image
-	opts := types.ImageBuildOptions{
+	opts := build.ImageBuildOptions{
 		Tags:       []string{imageName},
-		Dockerfile: filepath.Base(dockerfilePath),
+		Dockerfile: filepath.Join(".iso", filepath.Base(dockerfilePath)),
 		Remove:     true,
 		Context:    tar,
 	}
