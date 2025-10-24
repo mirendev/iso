@@ -6,31 +6,42 @@
     flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
-    flake-utils.lib.eachDefaultSystem (system:
+  outputs =
+    {
+      self,
+      nixpkgs,
+      flake-utils,
+    }:
+    flake-utils.lib.eachDefaultSystem (
+      system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
 
         # Build portable Linux binaries for embedding in containers
-        buildEmbeddedBinary = targetArch: pkgs.buildGoModule {
-          pname = "iso-${targetArch}";
-          version = "0.1.0";
-          src = ./.;
-          vendorHash = "sha256-5IBN44wt6A7tguKxWeo5cvXWCaiSpgg/QZCv9yMZkRE=";
-          subPackages = [ "cmd/iso" ];
-          tags = [ "linux_build" ];
+        buildEmbeddedBinary =
+          targetArch:
+          pkgs.buildGoModule {
+            pname = "iso-${targetArch}";
+            version = "0.1.0";
+            src = ./.;
+            vendorHash = "sha256-7DURQKtPSqVcIQ+ksAkp/ZgQm/1imCLyXDmq8PqR+PY=";
+            subPackages = [ "cmd/iso" ];
+            tags = [ "linux_build" ];
 
-          ldflags = [ "-s" "-w" ];
+            ldflags = [
+              "-s"
+              "-w"
+            ];
 
-          preBuild = ''
-            export CGO_ENABLED=0
-          '';
+            preBuild = ''
+              export CGO_ENABLED=0
+            '';
 
-          installPhase = ''
-            mkdir -p $out
-            cp $GOPATH/bin/iso $out/iso-linux-${targetArch}
-          '';
-        };
+            installPhase = ''
+              mkdir -p $out
+              cp $GOPATH/bin/iso $out/iso-linux-${targetArch}
+            '';
+          };
 
         iso-amd64 = buildEmbeddedBinary "amd64";
         iso-arm64 = buildEmbeddedBinary "arm64";
@@ -40,10 +51,13 @@
           pname = "iso";
           version = "0.1.0";
           src = ./.;
-          vendorHash = "sha256-5IBN44wt6A7tguKxWeo5cvXWCaiSpgg/QZCv9yMZkRE=";
+          vendorHash = "sha256-7DURQKtPSqVcIQ+ksAkp/ZgQm/1imCLyXDmq8PqR+PY=";
           subPackages = [ "cmd/iso" ];
 
-          ldflags = [ "-s" "-w" ];
+          ldflags = [
+            "-s"
+            "-w"
+          ];
 
           preBuild = ''
             export CGO_ENABLED=0
@@ -59,6 +73,8 @@
             golangci-lint
           ];
         };
+
+        formatter = pkgs.nixfmt-rfc-style;
       }
     );
 }
