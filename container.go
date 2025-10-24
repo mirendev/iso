@@ -205,9 +205,9 @@ func (cm *containerManager) startContainer() (string, error) {
 	}
 
 	hostConfig := &container.HostConfig{
-		Binds:       binds,
-		AutoRemove:  false,
-		Privileged:  cm.config.Privileged,
+		Binds:      binds,
+		AutoRemove: false,
+		Privileged: cm.config.Privileged,
 	}
 
 	// Set up network configuration if we have services
@@ -355,7 +355,7 @@ func (cm *containerManager) runCommand(command []string, envVars []string) (int,
 	}
 
 	// Wrap the command with /iso in-env run to handle pre/post scripts
-	wrappedCommand := append([]string{"/iso", "in-env", "run"}, command...)
+	wrappedCommand := append([]string{"/iso", "in-env", "run", "--"}, command...)
 
 	// Build exec environment (include ISO_WORKDIR for the in-env command)
 	execEnv := append([]string{

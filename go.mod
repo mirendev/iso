@@ -4,9 +4,10 @@ go 1.25.1
 
 require (
 	github.com/docker/docker v28.5.1+incompatible
+	github.com/moby/go-archive v0.1.0
 	github.com/moby/term v0.5.2
 	gopkg.in/yaml.v3 v3.0.1
-	miren.dev/mflags v0.0.0-20251018002931-4ffd6988fe65
+	miren.dev/mflags v0.0.0-20251024020833-0e10e0343bc0
 	miren.dev/trifle v0.0.0-20250804015409-37a9b7d4e8a0
 )
 
@@ -31,7 +32,6 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mitchellh/go-testing-interface v1.14.1 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
-	github.com/moby/go-archive v0.1.0 // indirect
 	github.com/moby/patternmatcher v0.6.0 // indirect
 	github.com/moby/sys/atomicwriter v0.1.0 // indirect
 	github.com/moby/sys/sequential v0.6.0 // indirect
