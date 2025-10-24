@@ -76,6 +76,11 @@ func (c *Client) Rebuild() error {
 	return c.containerManager.rebuildImage()
 }
 
+// Reset stops and removes the container but keeps services and volumes running
+func (c *Client) Reset() error {
+	return c.containerManager.resetContainer()
+}
+
 // Stop stops and removes the container and all services
 func (c *Client) Stop() error {
 	return c.containerManager.stopContainer()

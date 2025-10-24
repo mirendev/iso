@@ -466,6 +466,41 @@ func (cm *containerManager) runCommand(command []string, envVars []string) (int,
 	return inspectResp.ExitCode, nil
 }
 
+// resetContainer stops and removes the container but keeps services and volumes
+func (cm *containerManager) resetContainer() error {
+	exists, err := cm.docker.containerExists(cm.containerName)
+	if err != nil {
+		return err
+	}
+
+	if !exists {
+		slog.Info("container does not exist", "container", cm.containerName)
+		return nil
+	}
+
+	containerID, err := cm.docker.getContainerID(cm.containerName)
+	if err != nil {
+		return err
+	}
+
+	// Stop the container
+	timeout := 10
+	if err := cm.docker.client.ContainerStop(cm.docker.ctx, containerID, container.StopOptions{
+		Timeout: &timeout,
+	}); err != nil {
+		return fmt.Errorf("failed to stop container: %w", err)
+	}
+
+	// Remove the container
+	if err := cm.docker.client.ContainerRemove(cm.docker.ctx, containerID, container.RemoveOptions{}); err != nil {
+		return fmt.Errorf("failed to remove container: %w", err)
+	}
+
+	slog.Info("container reset - will be recreated on next run", "container", cm.containerName)
+
+	return nil
+}
+
 // stopContainer stops and removes the container
 func (cm *containerManager) stopContainer() error {
 	exists, err := cm.docker.containerExists(cm.containerName)

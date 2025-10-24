@@ -60,6 +60,7 @@ func run() error {
 	registerBuildCommand(dispatcher)
 	registerStartCommand(dispatcher)
 	registerStopCommand(dispatcher)
+	registerResetCommand(dispatcher)
 	registerStatusCommand(dispatcher)
 	registerInitCommand(dispatcher)
 	registerInEnvCommand(dispatcher)
@@ -220,6 +221,27 @@ func registerStopCommand(dispatcher *mflags.Dispatcher) {
 	)
 
 	dispatcher.Dispatch("stop", cmd)
+}
+
+// registerResetCommand registers the 'reset' command
+func registerResetCommand(dispatcher *mflags.Dispatcher) {
+	fs := mflags.NewFlagSet("reset")
+
+	handler := func(fs *mflags.FlagSet, args []string) error {
+		client, err := iso.New()
+		if err != nil {
+			return err
+		}
+		defer client.Close()
+
+		return client.Reset()
+	}
+
+	cmd := mflags.NewCommand(fs, handler,
+		mflags.WithUsage("Reset the container (keeps services and volumes running)"),
+	)
+
+	dispatcher.Dispatch("reset", cmd)
 }
 
 // registerStatusCommand registers the 'status' command
