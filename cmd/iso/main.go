@@ -31,9 +31,15 @@ func (e *ExitError) Error() string {
 }
 
 func main() {
+
+	level := slog.LevelInfo
+	if lvlStr, ok := os.LookupEnv("DEBUG"); ok && lvlStr != "0" {
+		level = slog.LevelDebug
+	}
+
 	// Set up slog with trifle
 	slog.SetDefault(slog.New(trifle.New(os.Stderr, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
+		Level: level,
 	})))
 
 	if err := run(); err != nil {
