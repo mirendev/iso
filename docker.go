@@ -1,11 +1,12 @@
 package iso
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
-	"io"
-	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/docker/docker/api/types/build"
 	"github.com/docker/docker/api/types/container"
@@ -87,9 +88,40 @@ func (d *dockerClient) buildImage(dockerfilePath, imageName string) error {
 	}
 	defer resp.Body.Close()
 
-	// Stream the build output
-	_, err = io.Copy(os.Stdout, resp.Body)
-	if err != nil {
+	// Parse and display build output
+	type buildMessage struct {
+		Stream      string `json:"stream"`
+		Error       string `json:"error"`
+		ErrorDetail struct {
+			Message string `json:"message"`
+		} `json:"errorDetail"`
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		var msg buildMessage
+		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
+			// If we can't parse JSON, just print the raw line
+			fmt.Println(scanner.Text())
+			continue
+		}
+
+		// Handle errors
+		if msg.Error != "" {
+			return fmt.Errorf("build failed: %s", msg.Error)
+		}
+
+		// Print stream output (build steps, etc.)
+		if msg.Stream != "" {
+			// Trim trailing newlines since fmt.Print will add one
+			output := strings.TrimSuffix(msg.Stream, "\n")
+			if output != "" {
+				fmt.Println(output)
+			}
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("failed to read build output: %w", err)
 	}
 
@@ -220,9 +252,53 @@ func (d *dockerClient) pullImage(imageName string) error {
 	}
 	defer out.Close()
 
-	// Stream the pull output
-	_, err = io.Copy(os.Stdout, out)
-	if err != nil {
+	// Parse and display pull output
+	type pullMessage struct {
+		Status         string `json:"status"`
+		Progress       string `json:"progress"`
+		ProgressDetail struct {
+			Current int64 `json:"current"`
+			Total   int64 `json:"total"`
+		} `json:"progressDetail"`
+		ID    string `json:"id"`
+		Error string `json:"error"`
+	}
+
+	scanner := bufio.NewScanner(out)
+	lastStatus := ""
+
+	for scanner.Scan() {
+		var msg pullMessage
+		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
+			// If we can't parse JSON, just print the raw line
+			fmt.Println(scanner.Text())
+			continue
+		}
+
+		// Handle errors
+		if msg.Error != "" {
+			return fmt.Errorf("pull failed: %s", msg.Error)
+		}
+
+		// Display status updates (avoid repeating the same status)
+		if msg.Status != "" {
+			statusLine := msg.Status
+			if msg.ID != "" {
+				statusLine = msg.ID + ": " + statusLine
+			}
+			if msg.Progress != "" {
+				statusLine += " " + msg.Progress
+			}
+
+			// Only print if status changed or has progress info
+			if statusLine != lastStatus || msg.Progress != "" {
+				fmt.Println(statusLine)
+				lastStatus = statusLine
+			}
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("failed to read pull output: %w", err)
 	}
 
