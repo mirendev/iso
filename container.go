@@ -13,6 +13,7 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
+	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/moby/term"
 )
 
@@ -441,8 +442,8 @@ func (cm *containerManager) runCommand(command []string, envVars []string) (int,
 			// TTY mode: use bidirectional connection
 			_, err = io.Copy(os.Stdout, attachResp.Conn)
 		} else {
-			// Non-TTY mode: use reader for output
-			_, err = io.Copy(os.Stdout, attachResp.Reader)
+			// Non-TTY mode: demultiplex stdout and stderr
+			_, err = stdcopy.StdCopy(os.Stdout, os.Stderr, attachResp.Reader)
 		}
 		outputDone <- err
 	}()
