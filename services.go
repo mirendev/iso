@@ -10,9 +10,11 @@ import (
 
 // Config defines configuration for the ISO environment
 type Config struct {
-	Privileged bool     `yaml:"privileged"`
-	WorkDir    string   `yaml:"workdir"`
-	Volumes    []string `yaml:"volumes"`
+	Privileged  bool              `yaml:"privileged"`
+	WorkDir     string            `yaml:"workdir"`
+	Volumes     []string          `yaml:"volumes"`
+	Cache       []string          `yaml:"cache"`
+	Environment map[string]string `yaml:"environment"`
 }
 
 // ServiceConfig defines configuration for a service container

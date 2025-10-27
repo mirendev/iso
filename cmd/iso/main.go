@@ -62,12 +62,29 @@ func run() error {
 	registerStopCommand(dispatcher)
 	registerResetCommand(dispatcher)
 	registerStatusCommand(dispatcher)
+	registerListCommand(dispatcher)
+	registerPruneCommand(dispatcher)
 	registerInitCommand(dispatcher)
+	registerInternalInitCommand(dispatcher)
 	registerInEnvCommand(dispatcher)
 	registerAgentHelpCommand(dispatcher)
 
 	// Execute the dispatcher
 	return dispatcher.Execute(os.Args[1:])
+}
+
+// getSession returns the session name and whether it's ephemeral
+// If no session is specified, returns an ephemeral session ID
+func getSession(flagValue string) (string, bool) {
+	if flagValue != "" {
+		return flagValue, false
+	}
+	if envSession := os.Getenv("ISO_SESSION"); envSession != "" {
+		return envSession, false
+	}
+	// No session specified - create ephemeral session
+	ephemeralID := fmt.Sprintf("ephemeral-%d", time.Now().UnixNano())
+	return ephemeralID, true
 }
 
 // isValidEnvVarName checks if a string is a valid environment variable name
@@ -99,6 +116,8 @@ func isValidEnvVarName(name string) bool {
 func registerRunCommand(dispatcher *mflags.Dispatcher) {
 	fs := mflags.NewFlagSet("run")
 
+	session := fs.String("session", 's', "", "Session name (default: ISO_SESSION env var or ephemeral)")
+
 	// Allow unknown flags to pass through to the command
 	fs.AllowUnknownFlags(true)
 
@@ -128,13 +147,22 @@ func registerRunCommand(dispatcher *mflags.Dispatcher) {
 			break
 		}
 
-		client, err := iso.New()
+		sessionName, isEphemeral := getSession(*session)
+		client, err := iso.New(sessionName)
 		if err != nil {
 			return err
 		}
 		defer client.Close()
 
 		exitCode, err := client.Run(actualCommand, envVars)
+
+		// If ephemeral session, clean up everything after run
+		if isEphemeral {
+			if stopErr := client.Stop(); stopErr != nil {
+				slog.Warn("failed to clean up ephemeral session", "error", stopErr)
+			}
+		}
+
 		if err != nil {
 			return err
 		}
@@ -158,11 +186,13 @@ func registerBuildCommand(dispatcher *mflags.Dispatcher) {
 	fs := mflags.NewFlagSet("build")
 
 	rebuild := fs.Bool("rebuild", 'r', false, "Force rebuild even if image exists")
+	session := fs.String("session", 's', "", "Session name (default: ISO_SESSION env var or ephemeral)")
 
 	handler := func(fs *mflags.FlagSet, args []string) error {
 		doRebuild := *rebuild
 
-		client, err := iso.New()
+		sessionName, _ := getSession(*session)
+		client, err := iso.New(sessionName)
 		if err != nil {
 			return err
 		}
@@ -185,8 +215,20 @@ func registerBuildCommand(dispatcher *mflags.Dispatcher) {
 func registerStartCommand(dispatcher *mflags.Dispatcher) {
 	fs := mflags.NewFlagSet("start")
 
+	session := fs.String("session", 's', "", "Session name (required, or use ISO_SESSION env var)")
+
 	handler := func(fs *mflags.FlagSet, args []string) error {
-		client, err := iso.New()
+		// For start command, session is required
+		var sessionName string
+		if *session != "" {
+			sessionName = *session
+		} else if envSession := os.Getenv("ISO_SESSION"); envSession != "" {
+			sessionName = envSession
+		} else {
+			return fmt.Errorf("session is required for 'iso start' - use --session flag or set ISO_SESSION env var")
+		}
+
+		client, err := iso.New(sessionName)
 		if err != nil {
 			return err
 		}
@@ -196,7 +238,7 @@ func registerStartCommand(dispatcher *mflags.Dispatcher) {
 	}
 
 	cmd := mflags.NewCommand(fs, handler,
-		mflags.WithUsage("Start all services with verbose output"),
+		mflags.WithUsage("Start a persistent session (requires --session)"),
 	)
 
 	dispatcher.Dispatch("start", cmd)
@@ -206,8 +248,30 @@ func registerStartCommand(dispatcher *mflags.Dispatcher) {
 func registerStopCommand(dispatcher *mflags.Dispatcher) {
 	fs := mflags.NewFlagSet("stop")
 
+	all := fs.Bool("all", 'a', false, "Stop all ISO-managed containers across all projects")
+	allSessions := fs.Bool("all-sessions", 'S', false, "Stop all sessions for the current project")
+	session := fs.String("session", 's', "", "Session name (required for stopping specific session, or use ISO_SESSION env var)")
+
 	handler := func(fs *mflags.FlagSet, args []string) error {
-		client, err := iso.New()
+		if *all {
+			return iso.StopAll()
+		}
+
+		if *allSessions {
+			return iso.StopAllSessions()
+		}
+
+		// For stopping a specific session, require session name
+		var sessionName string
+		if *session != "" {
+			sessionName = *session
+		} else if envSession := os.Getenv("ISO_SESSION"); envSession != "" {
+			sessionName = envSession
+		} else {
+			return fmt.Errorf("session is required for 'iso stop' - use --session flag, set ISO_SESSION env var, or use --all/--all-sessions")
+		}
+
+		client, err := iso.New(sessionName)
 		if err != nil {
 			return err
 		}
@@ -217,7 +281,7 @@ func registerStopCommand(dispatcher *mflags.Dispatcher) {
 	}
 
 	cmd := mflags.NewCommand(fs, handler,
-		mflags.WithUsage("Stop and remove the container and all services"),
+		mflags.WithUsage("Stop and remove a persistent session (requires --session, or use --all/--all-sessions)"),
 	)
 
 	dispatcher.Dispatch("stop", cmd)
@@ -227,8 +291,20 @@ func registerStopCommand(dispatcher *mflags.Dispatcher) {
 func registerResetCommand(dispatcher *mflags.Dispatcher) {
 	fs := mflags.NewFlagSet("reset")
 
+	session := fs.String("session", 's', "", "Session name (required, or use ISO_SESSION env var)")
+
 	handler := func(fs *mflags.FlagSet, args []string) error {
-		client, err := iso.New()
+		// For reset command, session is required
+		var sessionName string
+		if *session != "" {
+			sessionName = *session
+		} else if envSession := os.Getenv("ISO_SESSION"); envSession != "" {
+			sessionName = envSession
+		} else {
+			return fmt.Errorf("session is required for 'iso reset' - use --session flag or set ISO_SESSION env var")
+		}
+
+		client, err := iso.New(sessionName)
 		if err != nil {
 			return err
 		}
@@ -238,7 +314,7 @@ func registerResetCommand(dispatcher *mflags.Dispatcher) {
 	}
 
 	cmd := mflags.NewCommand(fs, handler,
-		mflags.WithUsage("Reset the container (keeps services and volumes running)"),
+		mflags.WithUsage("Reset a persistent session's container (requires --session)"),
 	)
 
 	dispatcher.Dispatch("reset", cmd)
@@ -248,8 +324,20 @@ func registerResetCommand(dispatcher *mflags.Dispatcher) {
 func registerStatusCommand(dispatcher *mflags.Dispatcher) {
 	fs := mflags.NewFlagSet("status")
 
+	session := fs.String("session", 's', "", "Session name (required, or use ISO_SESSION env var)")
+
 	handler := func(fs *mflags.FlagSet, args []string) error {
-		client, err := iso.New()
+		// For status command, session is required
+		var sessionName string
+		if *session != "" {
+			sessionName = *session
+		} else if envSession := os.Getenv("ISO_SESSION"); envSession != "" {
+			sessionName = envSession
+		} else {
+			return fmt.Errorf("session is required for 'iso status' - use --session flag or set ISO_SESSION env var")
+		}
+
+		client, err := iso.New(sessionName)
 		if err != nil {
 			return err
 		}
@@ -272,10 +360,86 @@ func registerStatusCommand(dispatcher *mflags.Dispatcher) {
 	}
 
 	cmd := mflags.NewCommand(fs, handler,
-		mflags.WithUsage("Show status of image and container"),
+		mflags.WithUsage("Show status of a session (requires --session)"),
 	)
 
 	dispatcher.Dispatch("status", cmd)
+}
+
+// registerListCommand registers the 'list' command
+func registerListCommand(dispatcher *mflags.Dispatcher) {
+	fs := mflags.NewFlagSet("list")
+
+	handler := func(fs *mflags.FlagSet, args []string) error {
+		containers, err := iso.ListAll()
+		if err != nil {
+			return err
+		}
+
+		if len(containers) == 0 {
+			fmt.Println("No ISO containers found")
+			return nil
+		}
+
+		// Print header
+		fmt.Printf("%-12s %-30s %-20s %-15s %s\n", "CONTAINER ID", "NAME", "PROJECT", "STATUS", "DIR")
+
+		// Print containers
+		for _, c := range containers {
+			projectName := fmt.Sprintf("%s:%s", c.ProjectName, c.Session)
+			if c.IsService {
+				projectName += " (service: " + c.ServiceName + ")"
+			} else if c.Fresh {
+				projectName += " (fresh)"
+			}
+
+			// Truncate dir if too long
+			dir := c.ProjectDir
+			if len(dir) > 50 {
+				dir = "..." + dir[len(dir)-47:]
+			}
+
+			fmt.Printf("%-12s %-30s %-20s %-15s %s\n",
+				c.ID,
+				c.Name,
+				projectName,
+				c.Status,
+				dir,
+			)
+		}
+
+		return nil
+	}
+
+	cmd := mflags.NewCommand(fs, handler,
+		mflags.WithUsage("List all ISO-managed containers"),
+	)
+
+	dispatcher.Dispatch("list", cmd)
+}
+
+// registerPruneCommand registers the 'prune' command
+func registerPruneCommand(dispatcher *mflags.Dispatcher) {
+	fs := mflags.NewFlagSet("prune")
+
+	handler := func(fs *mflags.FlagSet, args []string) error {
+		// Prune doesn't use a specific session since cache volumes are shared
+		// We just need a client to access the project configuration
+		sessionName, _ := getSession("")
+		client, err := iso.New(sessionName)
+		if err != nil {
+			return err
+		}
+		defer client.Close()
+
+		return client.Prune()
+	}
+
+	cmd := mflags.NewCommand(fs, handler,
+		mflags.WithUsage("Remove all cache volumes for the project"),
+	)
+
+	dispatcher.Dispatch("prune", cmd)
 }
 
 // reapZombies reaps any zombie child processes
@@ -291,9 +455,24 @@ func reapZombies() {
 	}
 }
 
-// registerInitCommand registers the 'init' command
+// registerInitCommand registers the 'init' command for project initialization
 func registerInitCommand(dispatcher *mflags.Dispatcher) {
 	fs := mflags.NewFlagSet("init")
+
+	handler := func(fs *mflags.FlagSet, args []string) error {
+		return iso.InitProject()
+	}
+
+	cmd := mflags.NewCommand(fs, handler,
+		mflags.WithUsage("Initialize .iso directory with AI-generated Dockerfile and services.yml"),
+	)
+
+	dispatcher.Dispatch("init", cmd)
+}
+
+// registerInternalInitCommand registers the '_internal-init' command for container init process
+func registerInternalInitCommand(dispatcher *mflags.Dispatcher) {
+	fs := mflags.NewFlagSet("_internal-init")
 
 	handler := func(fs *mflags.FlagSet, args []string) error {
 		// Set up signal handling
@@ -324,10 +503,10 @@ func registerInitCommand(dispatcher *mflags.Dispatcher) {
 	}
 
 	cmd := mflags.NewCommand(fs, handler,
-		mflags.WithUsage("Run as init process in container (sleep loop with signal handling and zombie reaping)"),
+		mflags.WithUsage("Run as init process in container (internal use only)"),
 	)
 
-	dispatcher.Dispatch("init", cmd)
+	dispatcher.Dispatch("_internal-init", cmd)
 }
 
 // waitForServices waits for all services in ISO_SERVICES to be reachable

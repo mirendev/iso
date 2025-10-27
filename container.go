@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
@@ -24,6 +25,8 @@ type containerManager struct {
 	containerName  string
 	dockerfilePath string
 	projectName    string
+	projectRoot    string // Absolute path to project root directory
+	session        string // Session name (default is "default")
 	networkName    string
 	services       map[string]ServiceConfig
 	isoDir         string
@@ -32,7 +35,12 @@ type containerManager struct {
 }
 
 // newContainerManager creates a new container manager
-func newContainerManager() (*containerManager, error) {
+func newContainerManager(session string) (*containerManager, error) {
+	// Default to "default" session if not specified
+	if session == "" {
+		session = "default"
+	}
+
 	docker, err := newDockerClient()
 	if err != nil {
 		return nil, err
@@ -64,9 +72,19 @@ func newContainerManager() (*containerManager, error) {
 		return nil, fmt.Errorf("Dockerfile not found at %s", dockerfilePath)
 	}
 
-	networkName := fmt.Sprintf("%s-network", projectName)
-	containerName := fmt.Sprintf("%s-shell", projectName)
+	// Generate names with session support
+	// Image name is always the same (sessions share the same image)
+	// Container and network names include session if not "default"
 	imageName := fmt.Sprintf("%s-shell", projectName)
+
+	var networkName, containerName string
+	if session == "default" {
+		networkName = fmt.Sprintf("%s-network", projectName)
+		containerName = fmt.Sprintf("%s-shell", projectName)
+	} else {
+		networkName = fmt.Sprintf("%s-%s-network", projectName, session)
+		containerName = fmt.Sprintf("%s-%s-shell", projectName, session)
+	}
 
 	// Get Docker architecture to determine which binary to use
 	arch, err := docker.getArchitecture()
@@ -86,6 +104,8 @@ func newContainerManager() (*containerManager, error) {
 		containerName:  containerName,
 		dockerfilePath: dockerfilePath,
 		projectName:    projectName,
+		projectRoot:    projectRoot,
+		session:        session,
 		networkName:    networkName,
 		services:       services,
 		isoDir:         isoDir,
@@ -101,15 +121,29 @@ func (cm *containerManager) close() error {
 }
 
 // getVolumeNameForPath generates a Docker volume name for a container path
+// Session-specific volumes are removed when the session is stopped
 func (cm *containerManager) getVolumeNameForPath(path string) string {
 	// Sanitize the path to create a valid volume name
 	// Replace / with - and remove leading/trailing dashes
 	sanitized := strings.ReplaceAll(strings.Trim(path, "/"), "/", "-")
-	return fmt.Sprintf("%s-%s", cm.projectName, sanitized)
+	if cm.session == "default" {
+		return fmt.Sprintf("%s-%s", cm.projectName, sanitized)
+	}
+	return fmt.Sprintf("%s-%s-%s", cm.projectName, cm.session, sanitized)
 }
 
-// ensureVolumes creates Docker volumes for configured volume paths
+// getCacheVolumeNameForPath generates a Docker volume name for a cache path
+// Cache volumes are shared across all sessions and persist until pruned
+func (cm *containerManager) getCacheVolumeNameForPath(path string) string {
+	// Sanitize the path to create a valid volume name
+	// Replace / with - and remove leading/trailing dashes
+	sanitized := strings.ReplaceAll(strings.Trim(path, "/"), "/", "-")
+	return fmt.Sprintf("%s-cache-%s", cm.projectName, sanitized)
+}
+
+// ensureVolumes creates Docker volumes for configured volume and cache paths
 func (cm *containerManager) ensureVolumes() error {
+	// Create session-specific volumes
 	for _, volumePath := range cm.config.Volumes {
 		volumeName := cm.getVolumeNameForPath(volumePath)
 
@@ -126,6 +160,25 @@ func (cm *containerManager) ensureVolumes() error {
 			}
 		}
 	}
+
+	// Create shared cache volumes
+	for _, cachePath := range cm.config.Cache {
+		volumeName := cm.getCacheVolumeNameForPath(cachePath)
+
+		// Check if volume exists
+		exists, err := cm.docker.volumeExists(volumeName)
+		if err != nil {
+			return err
+		}
+
+		if !exists {
+			slog.Debug("creating cache volume", "volume", volumeName, "path", cachePath)
+			if err := cm.docker.createVolume(volumeName); err != nil {
+				return err
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -191,18 +244,30 @@ func (cm *containerManager) startContainer() (string, error) {
 		fmt.Sprintf("%s:/iso:ro", cm.tempIsoPath),
 	}
 
-	// Add volume mounts
+	// Add session-specific volume mounts
 	for _, volumePath := range cm.config.Volumes {
 		volumeName := cm.getVolumeNameForPath(volumePath)
 		binds = append(binds, fmt.Sprintf("%s:%s", volumeName, volumePath))
+	}
+
+	// Add shared cache volume mounts
+	for _, cachePath := range cm.config.Cache {
+		volumeName := cm.getCacheVolumeNameForPath(cachePath)
+		binds = append(binds, fmt.Sprintf("%s:%s", volumeName, cachePath))
 	}
 
 	// Create container
 	containerConfig := &container.Config{
 		Image:      cm.imageName,
 		WorkingDir: cm.config.WorkDir,
-		Cmd:        []string{"/iso", "init"},
+		Cmd:        []string{"/iso", "_internal-init"},
 		Env:        env,
+		Labels: map[string]string{
+			"iso.managed":      "true",
+			"iso.project.name": cm.projectName,
+			"iso.project.dir":  cm.projectRoot,
+			"iso.session":      cm.session,
+		},
 	}
 
 	hostConfig := &container.HostConfig{
@@ -241,9 +306,140 @@ func (cm *containerManager) startContainer() (string, error) {
 	return resp.ID, nil
 }
 
+// startFreshServices starts fresh service containers for a single run
+// Returns a map of service container IDs that should be stopped after the run
+func (cm *containerManager) startFreshServices(runID string) (map[string]string, error) {
+	if len(cm.services) == 0 {
+		return nil, nil
+	}
+
+	// Ensure network exists
+	if err := cm.ensureNetwork(); err != nil {
+		return nil, err
+	}
+
+	serviceContainerIDs := make(map[string]string)
+
+	// Start each service with unique name
+	for serviceName, config := range cm.services {
+		// Generate unique service container name
+		var containerName string
+		if cm.session == "default" {
+			containerName = fmt.Sprintf("%s_%s-fresh-%s", cm.projectName, serviceName, runID)
+		} else {
+			containerName = fmt.Sprintf("%s-%s_%s-fresh-%s", cm.projectName, cm.session, serviceName, runID)
+		}
+
+		// Pull the image if it doesn't exist
+		imageExists, err := cm.docker.imageExists(config.Image)
+		if err != nil {
+			return nil, err
+		}
+
+		if !imageExists {
+			slog.Debug("pulling image", "image", config.Image)
+			if err := cm.docker.pullImage(config.Image); err != nil {
+				return nil, err
+			}
+		}
+
+		// Convert environment map to slice
+		var env []string
+		for key, value := range config.Environment {
+			env = append(env, fmt.Sprintf("%s=%s", key, value))
+		}
+
+		// Create container config
+		containerConfig := &container.Config{
+			Image: config.Image,
+			Env:   env,
+			Labels: map[string]string{
+				"iso.managed":      "true",
+				"iso.project.name": cm.projectName,
+				"iso.project.dir":  cm.projectRoot,
+				"iso.session":      cm.session,
+				"iso.service":      "true",
+				"iso.service.name": serviceName,
+				"iso.fresh":        "true",
+			},
+		}
+
+		// Set command if specified
+		if len(config.Command) > 0 {
+			containerConfig.Cmd = config.Command
+		}
+
+		hostConfig := &container.HostConfig{
+			AutoRemove: true, // Auto-remove when stopped
+		}
+
+		networkConfig := &network.NetworkingConfig{
+			EndpointsConfig: map[string]*network.EndpointSettings{
+				cm.networkName: {
+					Aliases: []string{serviceName}, // Use service name as DNS alias
+				},
+			},
+		}
+
+		// Create the service container
+		resp, err := cm.docker.client.ContainerCreate(
+			cm.docker.ctx,
+			containerConfig,
+			hostConfig,
+			networkConfig,
+			nil,
+			containerName,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create fresh service container %s: %w", serviceName, err)
+		}
+
+		// Start the service container
+		if err := cm.docker.client.ContainerStart(cm.docker.ctx, resp.ID, container.StartOptions{}); err != nil {
+			return nil, fmt.Errorf("failed to start fresh service container %s: %w", serviceName, err)
+		}
+
+		serviceContainerIDs[serviceName] = resp.ID
+		slog.Debug("fresh service started", "service", serviceName, "container", containerName)
+	}
+
+	return serviceContainerIDs, nil
+}
+
+// stopFreshServices stops and removes fresh service containers
+func (cm *containerManager) stopFreshServices(serviceContainerIDs map[string]string) {
+	if len(serviceContainerIDs) == 0 {
+		return
+	}
+
+	timeout := 2
+	for serviceName, containerID := range serviceContainerIDs {
+		if err := cm.docker.client.ContainerStop(cm.docker.ctx, containerID, container.StopOptions{
+			Timeout: &timeout,
+		}); err != nil {
+			// Ignore "already in progress" errors - containers have AutoRemove so Docker is cleaning them up
+			errStr := err.Error()
+			if !strings.Contains(errStr, "already in progress") && !strings.Contains(errStr, "No such container") {
+				slog.Warn("failed to stop fresh service", "service", serviceName, "error", err)
+			}
+		}
+	}
+}
+
 // runCommand runs a command in the container and returns the exit code
 // envVars is a slice of environment variables in KEY=VALUE format
 func (cm *containerManager) runCommand(command []string, envVars []string) (int, error) {
+	// Generate unique run ID for fresh services
+	runID := fmt.Sprintf("%d", time.Now().UnixNano())
+
+	// Start fresh services for this run (even in reuse mode)
+	serviceContainerIDs, err := cm.startFreshServices(runID)
+	if err != nil {
+		return 0, err
+	}
+	// Ensure services are stopped after run completes
+	defer cm.stopFreshServices(serviceContainerIDs)
+
 	// Check if container is already running
 	running, err := cm.docker.isContainerRunning(cm.containerName)
 	if err != nil {
@@ -259,11 +455,6 @@ func (cm *containerManager) runCommand(command []string, envVars []string) (int,
 		}
 
 		if exists {
-			// Start services first
-			if err := cm.startAllServices(false); err != nil {
-				return 0, err
-			}
-
 			// Get container ID and start it
 			containerID, err = cm.docker.getContainerID(cm.containerName)
 			if err != nil {
@@ -275,11 +466,6 @@ func (cm *containerManager) runCommand(command []string, envVars []string) (int,
 		} else {
 			// Ensure image exists
 			if err := cm.ensureImage(); err != nil {
-				return 0, err
-			}
-
-			// Start services first
-			if err := cm.startAllServices(false); err != nil {
 				return 0, err
 			}
 
@@ -359,9 +545,19 @@ func (cm *containerManager) runCommand(command []string, envVars []string) (int,
 	wrappedCommand := append([]string{"/iso", "in-env", "run", "--"}, command...)
 
 	// Build exec environment (include ISO_WORKDIR for the in-env command)
-	execEnv := append([]string{
+	// Start with ISO internal variables
+	execEnv := []string{
 		fmt.Sprintf("ISO_WORKDIR=%s", cm.config.WorkDir),
-	}, envVars...)
+		fmt.Sprintf("ISO_SESSION=%s", cm.session),
+	}
+
+	// Add environment variables from config.yml
+	for key, value := range cm.config.Environment {
+		execEnv = append(execEnv, fmt.Sprintf("%s=%s", key, value))
+	}
+
+	// Add command-line environment variables (these override config.yml)
+	execEnv = append(execEnv, envVars...)
 
 	// Execute the command in the container
 	execConfig := container.ExecOptions{
@@ -504,39 +700,55 @@ func (cm *containerManager) resetContainer() error {
 
 // stopContainer stops and removes the container
 func (cm *containerManager) stopContainer() error {
-	exists, err := cm.docker.containerExists(cm.containerName)
+	// Use labels to find all containers for this project (main + services)
+	containers, err := cm.docker.listProjectContainers(cm.projectName, cm.session)
 	if err != nil {
 		return err
 	}
 
-	if !exists {
-		slog.Info("container does not exist", "container", cm.containerName)
+	if len(containers) == 0 {
+		slog.Info("no containers to stop", "project", cm.projectName)
 		return nil
 	}
 
-	containerID, err := cm.docker.getContainerID(cm.containerName)
-	if err != nil {
-		return err
-	}
-
-	// Stop the container
+	// Stop and remove all containers
 	timeout := 10
-	if err := cm.docker.client.ContainerStop(cm.docker.ctx, containerID, container.StopOptions{
-		Timeout: &timeout,
-	}); err != nil {
-		return fmt.Errorf("failed to stop container: %w", err)
+	for _, c := range containers {
+		slog.Debug("stopping container", "name", c.Name, "service", c.IsService)
+
+		// Stop the container (may already be stopped/removed if it had AutoRemove)
+		if err := cm.docker.client.ContainerStop(cm.docker.ctx, c.ID, container.StopOptions{
+			Timeout: &timeout,
+		}); err != nil {
+			// If container doesn't exist or removal already in progress, it was auto-removed - that's fine
+			errStr := err.Error()
+			if !strings.Contains(errStr, "No such container") && !strings.Contains(errStr, "already in progress") {
+				return fmt.Errorf("failed to stop container %s: %w", c.Name, err)
+			}
+			slog.Debug("container already removed or being removed", "container", c.Name)
+			continue
+		}
+
+		// Remove the container
+		if err := cm.docker.client.ContainerRemove(cm.docker.ctx, c.ID, container.RemoveOptions{}); err != nil {
+			// If container doesn't exist or removal already in progress, it was auto-removed - that's fine
+			errStr := err.Error()
+			if !strings.Contains(errStr, "No such container") && !strings.Contains(errStr, "already in progress") {
+				return fmt.Errorf("failed to remove container %s: %w", c.Name, err)
+			}
+			slog.Debug("container already removed or being removed", "container", c.Name)
+			continue
+		}
+
+		slog.Debug("container stopped and removed", "container", c.Name)
 	}
 
-	// Remove the container
-	if err := cm.docker.client.ContainerRemove(cm.docker.ctx, containerID, container.RemoveOptions{}); err != nil {
-		return fmt.Errorf("failed to remove container: %w", err)
-	}
-
-	slog.Debug("container stopped and removed", "container", cm.containerName)
-
-	// Stop all services
-	if err := cm.stopAllServices(); err != nil {
-		return err
+	// Remove the network
+	if err := cm.docker.removeNetwork(cm.networkName); err != nil {
+		// Don't fail if network removal fails - it might still be in use or already removed
+		if !strings.Contains(err.Error(), "not found") {
+			slog.Warn("failed to remove network", "network", cm.networkName, "error", err)
+		}
 	}
 
 	// Remove volumes
@@ -610,11 +822,6 @@ func (cm *containerManager) getStatus() (string, error) {
 
 // ensureNetwork creates the Docker network if it doesn't exist
 func (cm *containerManager) ensureNetwork() error {
-	if len(cm.services) == 0 {
-		// No services, no need for network
-		return nil
-	}
-
 	exists, err := cm.docker.networkExists(cm.networkName)
 	if err != nil {
 		return err
@@ -632,7 +839,12 @@ func (cm *containerManager) ensureNetwork() error {
 
 // startService starts a single service container
 func (cm *containerManager) startService(serviceName string, config ServiceConfig) error {
-	containerName := fmt.Sprintf("%s_%s", cm.projectName, serviceName)
+	var containerName string
+	if cm.session == "default" {
+		containerName = fmt.Sprintf("%s_%s", cm.projectName, serviceName)
+	} else {
+		containerName = fmt.Sprintf("%s-%s_%s", cm.projectName, cm.session, serviceName)
+	}
 
 	// Check if service container already exists and is running
 	running, err := cm.docker.isContainerRunning(containerName)
@@ -683,6 +895,14 @@ func (cm *containerManager) startService(serviceName string, config ServiceConfi
 	containerConfig := &container.Config{
 		Image: config.Image,
 		Env:   env,
+		Labels: map[string]string{
+			"iso.managed":      "true",
+			"iso.project.name": cm.projectName,
+			"iso.project.dir":  cm.projectRoot,
+			"iso.session":      cm.session,
+			"iso.service":      "true",
+			"iso.service.name": serviceName,
+		},
 	}
 
 	// Set command if specified
@@ -787,8 +1007,39 @@ func (cm *containerManager) stopAllServices() error {
 
 	// Remove the network
 	if err := cm.docker.removeNetwork(cm.networkName); err != nil {
-		// Don't fail if network removal fails - it might still be in use
-		slog.Warn("failed to remove network", "network", cm.networkName, "error", err)
+		// Don't fail if network removal fails - it might still be in use or already removed
+		if !strings.Contains(err.Error(), "not found") {
+			slog.Warn("failed to remove network", "network", cm.networkName, "error", err)
+		}
+	}
+
+	return nil
+}
+
+// pruneCacheVolumes removes all cache volumes for this project
+func (cm *containerManager) pruneCacheVolumes() error {
+	if len(cm.config.Cache) == 0 {
+		slog.Info("no cache volumes configured")
+		return nil
+	}
+
+	for _, cachePath := range cm.config.Cache {
+		volumeName := cm.getCacheVolumeNameForPath(cachePath)
+
+		exists, err := cm.docker.volumeExists(volumeName)
+		if err != nil {
+			slog.Warn("failed to check cache volume existence", "volume", volumeName, "error", err)
+			continue
+		}
+
+		if exists {
+			slog.Info("removing cache volume", "volume", volumeName, "path", cachePath)
+			if err := cm.docker.removeVolume(volumeName); err != nil {
+				slog.Warn("failed to remove cache volume", "volume", volumeName, "error", err)
+			}
+		} else {
+			slog.Debug("cache volume does not exist", "volume", volumeName)
+		}
 	}
 
 	return nil

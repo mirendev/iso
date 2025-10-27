@@ -161,14 +161,21 @@ Example: If your project is in `/home/user/myapp`:
 
 ### iso run <command>
 
-Run a command in the isolated container. The container will:
+Run a command in the isolated container. By default, each command runs in a **fresh container** that is automatically removed after execution, ensuring a clean environment every time.
+
+The container will:
 1. Start any defined services (if not already running)
-2. Start the main container (building the image if needed)
+2. Create a fresh container (building the image if needed)
 3. Wait for services to be ready (if ports are specified)
 4. Execute `.iso/pre-run.sh` if it exists (aborts if it fails)
 5. Execute your command in the correct working directory
 6. Execute `.iso/post-run.sh` if it exists (failure logged but doesn't affect exit code)
 7. Forward stdin/stdout/stderr transparently
+8. Automatically remove the container after command completes
+
+**Options**:
+- `--reuse` / `-r`: Use a persistent container instead of creating a fresh one. The container will be reused across multiple `iso run` commands for faster startup.
+- `--session` / `-s`: Specify a session name (default: ISO_SESSION env var or 'default')
 
 **Environment Variables**: You can set environment variables for the command by prefixing them in `KEY=VALUE` format:
 
@@ -185,9 +192,9 @@ Environment variables must:
 
 Examples:
 ```bash
-iso run go test ./...
+iso run go test ./...              # Fresh container (default)
+iso run --reuse bash               # Persistent container
 iso run make build
-iso run bash
 iso run mysql -h mysql -u testuser -ptestpass testdb
 iso run VERBOSE=1 shell.sh
 ```
@@ -296,12 +303,13 @@ iso run <your-command>
 3. **No configuration needed**: All settings are inferred from the directory structure
 4. **Service naming**: Services in `services.yml` are accessed by their key name (e.g., `mysql`, `redis`)
 5. **Image caching**: Images are cached; use `--rebuild` only when Dockerfile changes
-6. **Persistent containers**: Containers persist between commands for faster startup
-7. **Network isolation**: Each project gets its own isolated network
-8. **Clean shutdown**: Use `iso stop` to clean up all resources
-9. **Service readiness**: Add `port` to services in `services.yml` for automatic readiness checks - no manual wait loops needed
-10. **Pre/Post hooks**: Use `.iso/pre-run.sh` for migrations/setup and `.iso/post-run.sh` for cleanup tasks
-11. **Hook executability**: Remember to make hook scripts executable with `chmod +x`
+6. **Fresh containers by default**: Each `iso run` uses a fresh container that auto-removes after execution, ensuring clean environments
+7. **Persistent containers**: Use `--reuse` flag when you need containers to persist between commands for faster startup (e.g., interactive shells)
+8. **Network isolation**: Each project gets its own isolated network
+9. **Clean shutdown**: Use `iso stop` to clean up all resources
+10. **Service readiness**: Add `port` to services in `services.yml` for automatic readiness checks - no manual wait loops needed
+11. **Pre/Post hooks**: Use `.iso/pre-run.sh` for migrations/setup and `.iso/post-run.sh` for cleanup tasks
+12. **Hook executability**: Remember to make hook scripts executable with `chmod +x`
 
 ## Troubleshooting
 

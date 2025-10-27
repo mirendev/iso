@@ -10,6 +10,7 @@ import (
 
 	"github.com/docker/docker/api/types/build"
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/api/types/volume"
@@ -335,4 +336,128 @@ func (d *dockerClient) removeVolume(volumeName string) error {
 		return fmt.Errorf("failed to remove volume: %w", err)
 	}
 	return nil
+}
+
+// isoContainerInfo represents an ISO-managed container (internal type)
+type isoContainerInfo struct {
+	ID          string
+	Name        string
+	ProjectName string
+	ProjectDir  string
+	Session     string
+	Status      string
+	Fresh       bool
+	IsService   bool
+	ServiceName string
+}
+
+// listIsoContainers lists all ISO-managed containers
+func (d *dockerClient) listIsoContainers() ([]isoContainerInfo, error) {
+	containers, err := d.client.ContainerList(d.ctx, container.ListOptions{
+		All: true,
+		Filters: filters.NewArgs(
+			filters.Arg("label", "iso.managed=true"),
+		),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list containers: %w", err)
+	}
+
+	var isoContainers []isoContainerInfo
+	for _, c := range containers {
+		name := ""
+		if len(c.Names) > 0 {
+			// Docker prefixes names with '/'
+			name = strings.TrimPrefix(c.Names[0], "/")
+		}
+
+		isoContainers = append(isoContainers, isoContainerInfo{
+			ID:          c.ID[:12], // Short ID
+			Name:        name,
+			ProjectName: c.Labels["iso.project.name"],
+			ProjectDir:  c.Labels["iso.project.dir"],
+			Session:     c.Labels["iso.session"],
+			Status:      c.Status,
+			Fresh:       c.Labels["iso.fresh"] == "true",
+			IsService:   c.Labels["iso.service"] == "true",
+			ServiceName: c.Labels["iso.service.name"],
+		})
+	}
+
+	return isoContainers, nil
+}
+
+// listProjectContainers lists all ISO-managed containers for a specific project and session
+func (d *dockerClient) listProjectContainers(projectName, session string) ([]isoContainerInfo, error) {
+	containers, err := d.client.ContainerList(d.ctx, container.ListOptions{
+		All: true,
+		Filters: filters.NewArgs(
+			filters.Arg("label", "iso.managed=true"),
+			filters.Arg("label", fmt.Sprintf("iso.project.name=%s", projectName)),
+			filters.Arg("label", fmt.Sprintf("iso.session=%s", session)),
+		),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list containers: %w", err)
+	}
+
+	var isoContainers []isoContainerInfo
+	for _, c := range containers {
+		name := ""
+		if len(c.Names) > 0 {
+			// Docker prefixes names with '/'
+			name = strings.TrimPrefix(c.Names[0], "/")
+		}
+
+		isoContainers = append(isoContainers, isoContainerInfo{
+			ID:          c.ID,
+			Name:        name,
+			ProjectName: c.Labels["iso.project.name"],
+			ProjectDir:  c.Labels["iso.project.dir"],
+			Session:     c.Labels["iso.session"],
+			Status:      c.Status,
+			Fresh:       c.Labels["iso.fresh"] == "true",
+			IsService:   c.Labels["iso.service"] == "true",
+			ServiceName: c.Labels["iso.service.name"],
+		})
+	}
+
+	return isoContainers, nil
+}
+
+// listProjectContainersAllSessions lists all ISO-managed containers for a specific project across all sessions
+func (d *dockerClient) listProjectContainersAllSessions(projectName string) ([]isoContainerInfo, error) {
+	containers, err := d.client.ContainerList(d.ctx, container.ListOptions{
+		All: true,
+		Filters: filters.NewArgs(
+			filters.Arg("label", "iso.managed=true"),
+			filters.Arg("label", fmt.Sprintf("iso.project.name=%s", projectName)),
+		),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list containers: %w", err)
+	}
+
+	var isoContainers []isoContainerInfo
+	for _, c := range containers {
+		name := ""
+		if len(c.Names) > 0 {
+			// Docker prefixes names with '/'
+			name = strings.TrimPrefix(c.Names[0], "/")
+		}
+
+		isoContainers = append(isoContainers, isoContainerInfo{
+			ID:          c.ID,
+			Name:        name,
+			ProjectName: c.Labels["iso.project.name"],
+			ProjectDir:  c.Labels["iso.project.dir"],
+			Session:     c.Labels["iso.session"],
+			Status:      c.Status,
+			Fresh:       c.Labels["iso.fresh"] == "true",
+			IsService:   c.Labels["iso.service"] == "true",
+			ServiceName: c.Labels["iso.service.name"],
+		})
+	}
+
+	return isoContainers, nil
 }
