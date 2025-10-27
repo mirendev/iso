@@ -135,11 +135,11 @@ func (c *Client) Status() (*Status, error) {
 type IsoContainer struct {
 	ID          string
 	Name        string
+	ShortName   string
 	ProjectName string
 	ProjectDir  string
 	Session     string
 	Status      string
-	Fresh       bool
 	IsService   bool
 	ServiceName string
 }
@@ -157,11 +157,11 @@ func (c *Client) List() ([]IsoContainer, error) {
 		result[i] = IsoContainer{
 			ID:          dc.ID,
 			Name:        dc.Name,
+			ShortName:   dc.ShortName,
 			ProjectName: dc.ProjectName,
 			ProjectDir:  dc.ProjectDir,
 			Session:     dc.Session,
 			Status:      dc.Status,
-			Fresh:       dc.Fresh,
 			IsService:   dc.IsService,
 			ServiceName: dc.ServiceName,
 		}
@@ -190,11 +190,11 @@ func ListAll() ([]IsoContainer, error) {
 		result[i] = IsoContainer{
 			ID:          dc.ID,
 			Name:        dc.Name,
+			ShortName:   dc.ShortName,
 			ProjectName: dc.ProjectName,
 			ProjectDir:  dc.ProjectDir,
 			Session:     dc.Session,
 			Status:      dc.Status,
-			Fresh:       dc.Fresh,
 			IsService:   dc.IsService,
 			ServiceName: dc.ServiceName,
 		}

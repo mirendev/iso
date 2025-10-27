@@ -267,6 +267,7 @@ func (cm *containerManager) startContainer() (string, error) {
 			"iso.project.name": cm.projectName,
 			"iso.project.dir":  cm.projectRoot,
 			"iso.session":      cm.session,
+			"iso.name":         "shell",
 		},
 	}
 
@@ -360,6 +361,7 @@ func (cm *containerManager) startFreshServices(runID string) (map[string]string,
 				"iso.session":      cm.session,
 				"iso.service":      "true",
 				"iso.service.name": serviceName,
+				"iso.name":         serviceName,
 				"iso.fresh":        "true",
 			},
 		}
@@ -902,6 +904,7 @@ func (cm *containerManager) startService(serviceName string, config ServiceConfi
 			"iso.session":      cm.session,
 			"iso.service":      "true",
 			"iso.service.name": serviceName,
+			"iso.name":         serviceName,
 		},
 	}
 

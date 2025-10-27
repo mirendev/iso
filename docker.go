@@ -342,6 +342,7 @@ func (d *dockerClient) removeVolume(volumeName string) error {
 type isoContainerInfo struct {
 	ID          string
 	Name        string
+	ShortName   string
 	ProjectName string
 	ProjectDir  string
 	Session     string
@@ -374,6 +375,7 @@ func (d *dockerClient) listIsoContainers() ([]isoContainerInfo, error) {
 		isoContainers = append(isoContainers, isoContainerInfo{
 			ID:          c.ID[:12], // Short ID
 			Name:        name,
+			ShortName:   c.Labels["iso.name"],
 			ProjectName: c.Labels["iso.project.name"],
 			ProjectDir:  c.Labels["iso.project.dir"],
 			Session:     c.Labels["iso.session"],
@@ -412,6 +414,7 @@ func (d *dockerClient) listProjectContainers(projectName, session string) ([]iso
 		isoContainers = append(isoContainers, isoContainerInfo{
 			ID:          c.ID,
 			Name:        name,
+			ShortName:   c.Labels["iso.name"],
 			ProjectName: c.Labels["iso.project.name"],
 			ProjectDir:  c.Labels["iso.project.dir"],
 			Session:     c.Labels["iso.session"],
@@ -449,6 +452,7 @@ func (d *dockerClient) listProjectContainersAllSessions(projectName string) ([]i
 		isoContainers = append(isoContainers, isoContainerInfo{
 			ID:          c.ID,
 			Name:        name,
+			ShortName:   c.Labels["iso.name"],
 			ProjectName: c.Labels["iso.project.name"],
 			ProjectDir:  c.Labels["iso.project.dir"],
 			Session:     c.Labels["iso.session"],

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"crypto/rand"
 	_ "embed"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -82,8 +84,14 @@ func getSession(flagValue string) (string, bool) {
 	if envSession := os.Getenv("ISO_SESSION"); envSession != "" {
 		return envSession, false
 	}
+
+	buf := make([]byte, 8)
+	rand.Read(buf)
+
+	suffix := base64.RawURLEncoding.EncodeToString(buf)
+
 	// No session specified - create ephemeral session
-	ephemeralID := fmt.Sprintf("ephemeral-%d", time.Now().UnixNano())
+	ephemeralID := "eph-" + suffix
 	return ephemeralID, true
 }
 
@@ -381,32 +389,36 @@ func registerListCommand(dispatcher *mflags.Dispatcher) {
 			return nil
 		}
 
-		// Print header
-		fmt.Printf("%-12s %-30s %-20s %-15s %s\n", "CONTAINER ID", "NAME", "PROJECT", "STATUS", "DIR")
-
-		// Print containers
+		// Group containers by project
+		projectGroups := make(map[string][]iso.IsoContainer)
+		projectDirs := make(map[string]string)
 		for _, c := range containers {
-			projectName := fmt.Sprintf("%s:%s", c.ProjectName, c.Session)
-			if c.IsService {
-				projectName += " (service: " + c.ServiceName + ")"
-			} else if c.Fresh {
-				projectName += " (fresh)"
-			}
-
-			// Truncate dir if too long
-			dir := c.ProjectDir
-			if len(dir) > 50 {
-				dir = "..." + dir[len(dir)-47:]
-			}
-
-			fmt.Printf("%-12s %-30s %-20s %-15s %s\n",
-				c.ID,
-				c.Name,
-				projectName,
-				c.Status,
-				dir,
-			)
+			projectGroups[c.ProjectName] = append(projectGroups[c.ProjectName], c)
+			projectDirs[c.ProjectName] = c.ProjectDir
 		}
+
+		// Print each project group
+		for projectName, projectContainers := range projectGroups {
+			fmt.Printf("\n%s (%s):\n", projectName, projectDirs[projectName])
+			fmt.Printf("  %-12s %-15s %-20s %s\n", "CONTAINER ID", "NAME", "SESSION", "STATUS")
+
+			for _, c := range projectContainers {
+				status := c.Status
+
+				sessionInfo := c.Session
+				if c.IsService {
+					status += " (service: " + c.ServiceName + ")"
+				}
+
+				fmt.Printf("  %-12s %-15s %-20s %s\n",
+					c.ID,
+					c.ShortName,
+					sessionInfo,
+					status,
+				)
+			}
+		}
+		fmt.Println()
 
 		return nil
 	}
