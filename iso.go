@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/docker/docker/api/types/container"
 )
@@ -243,24 +244,37 @@ func StopAll() error {
 		if err := docker.client.ContainerStop(docker.ctx, containerID, container.StopOptions{
 			Timeout: &timeout,
 		}); err != nil {
-			slog.Warn("failed to stop container", "name", c.Name, "error", err)
+			// Ignore "already in progress" and "no such container" errors
+			errStr := err.Error()
+			if !strings.Contains(errStr, "already in progress") && !strings.Contains(errStr, "No such container") {
+				slog.Warn("failed to stop container", "name", c.Name, "error", err)
+			}
 		}
 
 		// Remove the container
 		if err := docker.client.ContainerRemove(docker.ctx, containerID, container.RemoveOptions{}); err != nil {
-			slog.Warn("failed to remove container", "name", c.Name, "error", err)
+			// Ignore "already in progress" and "no such container" errors - AutoRemove containers remove themselves
+			errStr := err.Error()
+			if !strings.Contains(errStr, "already in progress") && !strings.Contains(errStr, "No such container") {
+				slog.Warn("failed to remove container", "name", c.Name, "error", err)
+			}
 		}
 
 		// Track project networks to remove later
 		projectNetworks[c.ProjectName] = true
 	}
 
+	// Give Docker a moment to clean up container endpoints before removing networks
+	time.Sleep(100 * time.Millisecond)
+
 	// Remove all project networks
 	for projectName := range projectNetworks {
 		networkName := fmt.Sprintf("%s-network", projectName)
 		if err := docker.removeNetwork(networkName); err != nil {
-			// Don't fail on network removal errors - they might still be in use
-			slog.Warn("failed to remove network", "network", networkName, "error", err)
+			// Ignore "not found" errors - network was already removed
+			if !strings.Contains(err.Error(), "not found") {
+				slog.Warn("failed to remove network", "network", networkName, "error", err)
+			}
 		}
 	}
 
@@ -309,12 +323,20 @@ func StopAllSessions() error {
 		if err := docker.client.ContainerStop(docker.ctx, c.ID, container.StopOptions{
 			Timeout: &timeout,
 		}); err != nil {
-			slog.Warn("failed to stop container", "name", c.Name, "error", err)
+			// Ignore "already in progress" and "no such container" errors
+			errStr := err.Error()
+			if !strings.Contains(errStr, "already in progress") && !strings.Contains(errStr, "No such container") {
+				slog.Warn("failed to stop container", "name", c.Name, "error", err)
+			}
 		}
 
 		// Remove the container
 		if err := docker.client.ContainerRemove(docker.ctx, c.ID, container.RemoveOptions{}); err != nil {
-			slog.Warn("failed to remove container", "name", c.Name, "error", err)
+			// Ignore "already in progress" and "no such container" errors - AutoRemove containers remove themselves
+			errStr := err.Error()
+			if !strings.Contains(errStr, "already in progress") && !strings.Contains(errStr, "No such container") {
+				slog.Warn("failed to remove container", "name", c.Name, "error", err)
+			}
 		}
 
 		// Track session networks to remove later
@@ -325,11 +347,16 @@ func StopAllSessions() error {
 		}
 	}
 
+	// Give Docker a moment to clean up container endpoints before removing networks
+	time.Sleep(100 * time.Millisecond)
+
 	// Remove all session networks
 	for networkName := range sessionNetworks {
 		if err := docker.removeNetwork(networkName); err != nil {
-			// Don't fail on network removal errors - they might still be in use
-			slog.Warn("failed to remove network", "network", networkName, "error", err)
+			// Ignore "not found" errors - network was already removed
+			if !strings.Contains(err.Error(), "not found") {
+				slog.Warn("failed to remove network", "network", networkName, "error", err)
+			}
 		}
 	}
 
