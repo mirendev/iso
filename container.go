@@ -20,18 +20,20 @@ import (
 
 // containerManager handles container lifecycle operations
 type containerManager struct {
-	docker         *dockerClient
-	imageName      string
-	containerName  string
-	dockerfilePath string
-	projectName    string
-	projectRoot    string // Absolute path to project root directory
-	session        string // Session name (default is "default")
-	networkName    string
-	services       map[string]ServiceConfig
-	isoDir         string
-	tempIsoPath    string // Path to extracted Linux iso binary
-	config         *Config
+	docker              *dockerClient
+	imageName           string
+	containerName       string
+	dockerfilePath      string
+	projectName         string // Deprecated: use worktreeProjectName
+	baseProjectName     string // Base project name (shared across worktrees, used for cache volumes)
+	worktreeProjectName string // Worktree-specific project name (used for containers, networks, session volumes)
+	projectRoot         string // Absolute path to project root directory
+	session             string // Session name (default is "default")
+	networkName         string
+	services            map[string]ServiceConfig
+	isoDir              string
+	tempIsoPath         string // Path to extracted Linux iso binary
+	config              *Config
 }
 
 // newContainerManager creates a new container manager
@@ -64,7 +66,9 @@ func newContainerManager(session string) (*containerManager, error) {
 		return nil, err
 	}
 
-	projectName := filepath.Base(projectRoot)
+	// Detect git worktree to determine project names
+	baseProjectName, worktreeProjectName := detectGitWorktree(projectRoot)
+
 	dockerfilePath := filepath.Join(isoDir, "Dockerfile")
 
 	// Check if Dockerfile exists
@@ -73,17 +77,18 @@ func newContainerManager(session string) (*containerManager, error) {
 	}
 
 	// Generate names with session support
-	// Image name is always the same (sessions share the same image)
-	// Container and network names include session if not "default"
-	imageName := fmt.Sprintf("%s-shell", projectName)
+	// Image name uses worktreeProjectName (worktrees can have different Dockerfiles)
+	// Container and network names use worktreeProjectName (isolated per worktree)
+	// Cache volumes will use baseProjectName (shared across worktrees)
+	imageName := fmt.Sprintf("%s-shell", worktreeProjectName)
 
 	var networkName, containerName string
 	if session == "default" {
-		networkName = fmt.Sprintf("%s-network", projectName)
-		containerName = fmt.Sprintf("%s-shell", projectName)
+		networkName = fmt.Sprintf("%s-network", worktreeProjectName)
+		containerName = fmt.Sprintf("%s-shell", worktreeProjectName)
 	} else {
-		networkName = fmt.Sprintf("%s-%s-network", projectName, session)
-		containerName = fmt.Sprintf("%s-%s-shell", projectName, session)
+		networkName = fmt.Sprintf("%s-%s-network", worktreeProjectName, session)
+		containerName = fmt.Sprintf("%s-%s-shell", worktreeProjectName, session)
 	}
 
 	// Get Docker architecture to determine which binary to use
@@ -99,18 +104,20 @@ func newContainerManager(session string) (*containerManager, error) {
 	}
 
 	return &containerManager{
-		docker:         docker,
-		imageName:      imageName,
-		containerName:  containerName,
-		dockerfilePath: dockerfilePath,
-		projectName:    projectName,
-		projectRoot:    projectRoot,
-		session:        session,
-		networkName:    networkName,
-		services:       services,
-		isoDir:         isoDir,
-		tempIsoPath:    isoPath,
-		config:         config,
+		docker:              docker,
+		imageName:           imageName,
+		containerName:       containerName,
+		dockerfilePath:      dockerfilePath,
+		projectName:         worktreeProjectName, // Maintain backward compatibility
+		baseProjectName:     baseProjectName,
+		worktreeProjectName: worktreeProjectName,
+		projectRoot:         projectRoot,
+		session:             session,
+		networkName:         networkName,
+		services:            services,
+		isoDir:              isoDir,
+		tempIsoPath:         isoPath,
+		config:              config,
 	}, nil
 }
 
@@ -122,23 +129,25 @@ func (cm *containerManager) close() error {
 
 // getVolumeNameForPath generates a Docker volume name for a container path
 // Session-specific volumes are removed when the session is stopped
+// Uses worktreeProjectName to isolate volumes per worktree
 func (cm *containerManager) getVolumeNameForPath(path string) string {
 	// Sanitize the path to create a valid volume name
 	// Replace / with - and remove leading/trailing dashes
 	sanitized := strings.ReplaceAll(strings.Trim(path, "/"), "/", "-")
 	if cm.session == "default" {
-		return fmt.Sprintf("%s-%s", cm.projectName, sanitized)
+		return fmt.Sprintf("%s-%s", cm.worktreeProjectName, sanitized)
 	}
-	return fmt.Sprintf("%s-%s-%s", cm.projectName, cm.session, sanitized)
+	return fmt.Sprintf("%s-%s-%s", cm.worktreeProjectName, cm.session, sanitized)
 }
 
 // getCacheVolumeNameForPath generates a Docker volume name for a cache path
-// Cache volumes are shared across all sessions and persist until pruned
+// Cache volumes are shared across all sessions and worktrees, persist until pruned
+// Uses baseProjectName to share caches across all worktrees of the same base repository
 func (cm *containerManager) getCacheVolumeNameForPath(path string) string {
 	// Sanitize the path to create a valid volume name
 	// Replace / with - and remove leading/trailing dashes
 	sanitized := strings.ReplaceAll(strings.Trim(path, "/"), "/", "-")
-	return fmt.Sprintf("%s-cache-%s", cm.projectName, sanitized)
+	return fmt.Sprintf("%s-cache-%s", cm.baseProjectName, sanitized)
 }
 
 // ensureVolumes creates Docker volumes for configured volume and cache paths

@@ -34,6 +34,11 @@ workdir: /workspace
 volumes:
   - /data
   - /go/pkg
+
+# Paths that should be mounted as shared cache volumes (optional)
+cache:
+  - /go/pkg/mod
+  - /root/.cache/go-build
 ```
 
 **Available Options**:
@@ -42,19 +47,27 @@ volumes:
 
 - **workdir** (string, default: `/workspace`): The directory path inside the container where your project root will be mounted. This affects where your code is accessible in the container.
 
-- **volumes** (list of strings, optional): List of container paths that should be mounted as persistent Docker volumes instead of being part of the project directory. These volumes persist across container restarts and are automatically removed when you run `iso stop`. Useful for caching build artifacts, dependencies, or data that should persist between runs but doesn't need to be in your project directory.
+- **volumes** (list of strings, optional): List of container paths that should be mounted as persistent Docker volumes instead of being part of the project directory. These volumes are isolated per worktree/session and are automatically removed when you run `iso stop`. Useful for application state or data that should persist between runs but remain isolated per worktree.
+
+- **cache** (list of strings, optional): List of container paths that should be mounted as shared cache volumes. Cache volumes are **shared across all worktrees** of the same repository and persist until you run `iso prune`. Ideal for package manager caches (Go modules, npm, pip, cargo) that can be safely shared to avoid redundant downloads.
 
 Example:
 ```yaml
 privileged: true
 workdir: /code
 volumes:
-  - /data           # Persistent data directory
-  - /go/pkg         # Go package cache
-  - /root/.cache    # General cache directory
+  - /data           # Isolated data directory (per worktree)
+cache:
+  - /go/pkg/mod               # Shared Go module cache
+  - /root/.cache/go-build     # Shared Go build cache
+  - /root/.cache/pip          # Shared Python package cache
 ```
 
-**Volume Naming**: Volumes are automatically named as `<project>-<sanitized-path>`. For example, if your project is named `myapp` and you configure `/go/pkg` as a volume, it will be created as `myapp-go-pkg`.
+**Volume Naming**:
+- Session volumes are named as `<worktree>-<sanitized-path>` and are isolated per worktree
+- Cache volumes are named as `<base-project>-cache-<sanitized-path>` and are shared across worktrees
+
+**Git Worktree Support**: ISO automatically detects git worktrees and shares cache volumes across all worktrees of the same repository. For example, if your main repo is `myproject` and you create worktrees `myproject-feature1` and `myproject-feature2`, all three will share the same cache volumes (e.g., `myproject-cache-go-pkg-mod`) while maintaining isolated session volumes.
 
 ### .iso/Dockerfile
 

@@ -3,7 +3,9 @@ package iso
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -126,4 +128,55 @@ func findIsoDir() (isoPath string, projectRoot string, found bool) {
 	}
 
 	return "", "", false
+}
+
+// detectGitWorktree checks if the project is in a git worktree and returns project names
+// Returns baseProjectName (for shared caches) and worktreeProjectName (for isolated resources)
+func detectGitWorktree(projectRoot string) (baseProjectName, worktreeProjectName string) {
+	// Default: use the directory name as both base and worktree project name
+	worktreeProjectName = filepath.Base(projectRoot)
+	baseProjectName = worktreeProjectName
+
+	// Try to detect if we're in a git worktree
+	// A worktree has a different git-dir than git-common-dir
+	gitCommonCmd := exec.Command("git", "-C", projectRoot, "rev-parse", "--git-common-dir")
+	gitCommonOut, err := gitCommonCmd.Output()
+	if err != nil {
+		// Not a git repo or git not available - use default
+		return baseProjectName, worktreeProjectName
+	}
+
+	gitDirCmd := exec.Command("git", "-C", projectRoot, "rev-parse", "--git-dir")
+	gitDirOut, err := gitDirCmd.Output()
+	if err != nil {
+		// Can't determine git-dir - use default
+		return baseProjectName, worktreeProjectName
+	}
+
+	gitCommonDir := strings.TrimSpace(string(gitCommonOut))
+	gitDir := strings.TrimSpace(string(gitDirOut))
+
+	// If git-common-dir is different from git-dir, we're in a worktree
+	if gitCommonDir != gitDir {
+		// Resolve the common dir to absolute path
+		var commonPath string
+		if filepath.IsAbs(gitCommonDir) {
+			commonPath = gitCommonDir
+		} else {
+			// Relative to projectRoot
+			commonPath = filepath.Join(projectRoot, gitCommonDir)
+		}
+
+		// Clean the path to resolve any .. or .
+		commonPath = filepath.Clean(commonPath)
+
+		// The base repo directory is the parent of the .git directory
+		// e.g., /home/user/myproject/.git -> /home/user/myproject
+		if strings.HasSuffix(commonPath, "/.git") || strings.HasSuffix(commonPath, "\\.git") {
+			baseRepoDir := filepath.Dir(commonPath)
+			baseProjectName = filepath.Base(baseRepoDir)
+		}
+	}
+
+	return baseProjectName, worktreeProjectName
 }
