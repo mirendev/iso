@@ -234,6 +234,16 @@ Options:
 
 Show the current status of the image and container.
 
+### iso version
+
+Show version information, including the git commit hash the binary was built from.
+
+Example:
+```bash
+iso version
+# Output: iso dev (commit: 2a27c1b1488a0b5b0cd647e9c28a7c3bbec9c801)
+```
+
 ### iso init
 
 Internal command used as the init process inside containers. You shouldn't need to call this directly.

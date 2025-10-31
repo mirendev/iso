@@ -23,6 +23,12 @@ import (
 //go:embed agent-help.md
 var agentHelpContent string
 
+// Version information, set by ldflags at build time
+var (
+	version = "dev"
+	commit  = "unknown"
+)
+
 // ExitError carries an exit code
 type ExitError struct {
 	Code int
@@ -70,6 +76,7 @@ func run() error {
 	registerInternalInitCommand(dispatcher)
 	registerInEnvCommand(dispatcher)
 	registerAgentHelpCommand(dispatcher)
+	registerVersionCommand(dispatcher)
 
 	// Execute the dispatcher
 	return dispatcher.Execute(os.Args[1:])
@@ -663,4 +670,24 @@ func registerAgentHelpCommand(dispatcher *mflags.Dispatcher) {
 	)
 
 	dispatcher.Dispatch("agent-help", cmd)
+}
+
+// registerVersionCommand registers the 'version' command
+func registerVersionCommand(dispatcher *mflags.Dispatcher) {
+	fs := mflags.NewFlagSet("version")
+
+	handler := func(fs *mflags.FlagSet, args []string) error {
+		if version == "dev" {
+			fmt.Printf("iso %s (commit: %s)\n", version, commit)
+		} else {
+			fmt.Printf("iso %s\n", version)
+		}
+		return nil
+	}
+
+	cmd := mflags.NewCommand(fs, handler,
+		mflags.WithUsage("Show version information"),
+	)
+
+	dispatcher.Dispatch("version", cmd)
 }

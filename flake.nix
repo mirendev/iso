@@ -31,6 +31,7 @@
             ldflags = [
               "-s"
               "-w"
+              "-X main.commit=${self.rev or "dirty"}"
             ];
 
             preBuild = ''
@@ -57,6 +58,7 @@
           ldflags = [
             "-s"
             "-w"
+            "-X main.commit=${self.rev or "dirty"}"
           ];
 
           preBuild = ''
