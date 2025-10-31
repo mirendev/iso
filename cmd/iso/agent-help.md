@@ -174,21 +174,24 @@ Example: If your project is in `/home/user/myapp`:
 
 ### iso run <command>
 
-Run a command in the isolated container. By default, each command runs in a **fresh container** that is automatically removed after execution, ensuring a clean environment every time.
+Run a command in the isolated container. By default, each command runs in an **ephemeral session** that is automatically cleaned up after execution, ensuring a clean environment every time.
 
 The container will:
 1. Start any defined services (if not already running)
-2. Create a fresh container (building the image if needed)
+2. Create a container (building the image if needed)
 3. Wait for services to be ready (if ports are specified)
 4. Execute `.iso/pre-run.sh` if it exists (aborts if it fails)
 5. Execute your command in the correct working directory
 6. Execute `.iso/post-run.sh` if it exists (failure logged but doesn't affect exit code)
 7. Forward stdin/stdout/stderr transparently
-8. Automatically remove the container after command completes
+8. Automatically remove the container and services after command completes (ephemeral mode only)
 
 **Options**:
-- `--reuse` / `-r`: Use a persistent container instead of creating a fresh one. The container will be reused across multiple `iso run` commands for faster startup.
-- `--session` / `-s`: Specify a session name (default: ISO_SESSION env var or 'default')
+- `--session` / `-s`: Specify a session name to use a persistent container instead of an ephemeral one (default: ISO_SESSION env var or ephemeral)
+
+**Ephemeral vs Persistent Sessions**:
+- **Ephemeral** (default): Fresh container auto-removed after each command, perfect for one-off tasks
+- **Persistent**: Use `--session <name>` to create a reusable container that persists until `iso stop`. Use `iso start --session <name>` to pre-start the container, or it will be created automatically on first run.
 
 **Environment Variables**: You can set environment variables for the command by prefixing them in `KEY=VALUE` format:
 
@@ -205,23 +208,30 @@ Environment variables must:
 
 Examples:
 ```bash
-iso run go test ./...              # Fresh container (default)
-iso run --reuse bash               # Persistent container
-iso run make build
+iso run go test ./...                    # Ephemeral session (default)
+iso run --session dev bash               # Persistent session named "dev"
+ISO_SESSION=dev iso run make build       # Same, using env var
 iso run mysql -h mysql -u testuser -ptestpass testdb
 iso run VERBOSE=1 shell.sh
 ```
 
 ### iso start
 
-Start the main container and all services with verbose logging. Useful for:
-- Pre-starting services before running commands
-- Debugging service startup issues
-- Keeping services running between commands
+Start a persistent session container and all services with verbose logging. **Requires** a session name via `--session` flag or `ISO_SESSION` env var.
+
+Useful for:
+- Pre-starting containers before running commands
+- Debugging container startup issues
+- Keeping containers running between commands
 
 ### iso stop
 
-Stop and remove the main container and all service containers. Also removes the Docker network.
+Stop and remove containers for a session. **Requires** a session name via `--session` flag or `ISO_SESSION` env var.
+
+**Options**:
+- `--session` / `-s`: Stop a specific session
+- `--all` / `-a`: Stop all ISO-managed containers across all projects
+- `--all-sessions` / `-S`: Stop all sessions for the current project
 
 ### iso build [--rebuild]
 
@@ -232,7 +242,19 @@ Options:
 
 ### iso status
 
-Show the current status of the image and container.
+Show the current status of the image and container for a session. **Requires** a session name via `--session` flag or `ISO_SESSION` env var.
+
+### iso list
+
+List all ISO-managed containers across all projects and sessions, grouped by project.
+
+### iso reset
+
+Reset a persistent session's container by stopping and recreating it. **Requires** a session name via `--session` flag or `ISO_SESSION` env var. Useful when you need a fresh container state but want to keep the same session.
+
+### iso prune
+
+Remove all cache volumes for the current project. Cache volumes are shared across all sessions/worktrees of the same repository. Use this to free up disk space or force a clean rebuild of caches.
 
 ### iso version
 
@@ -246,7 +268,11 @@ iso version
 
 ### iso init
 
-Internal command used as the init process inside containers. You shouldn't need to call this directly.
+Initialize a new `.iso` directory with AI-generated Dockerfile and services.yml based on your project.
+
+### iso in-env run
+
+Internal command used to run commands inside containers with pre/post hook support. You shouldn't need to call this directly.
 
 ## Service Communication
 
@@ -292,20 +318,38 @@ iso run bash
 iso run ./migrate up
 ```
 
-### Working with Services
+### Working with Persistent Sessions
 
 ```bash
+# Set a session name to use persistent containers
+export ISO_SESSION=dev
+
 # Services start automatically with any command
-iso run go test ./...  # Starts mysql, runs tests
+iso run go test ./...  # Starts mysql, runs tests in 'dev' session
 
 # Or pre-start them explicitly
-iso start
+iso start  # Starts 'dev' session
 
 # Check what's running
-iso status
+iso status  # Shows status of 'dev' session
 
-# Stop everything when done
+# List all sessions across all projects
+iso list
+
+# Stop the session when done
 iso stop
+
+# Or stop all sessions for the project
+iso stop --all-sessions
+```
+
+### Working with Ephemeral Sessions
+
+```bash
+# No setup needed - just run commands
+iso run go test ./...     # Fresh environment, auto-cleaned
+iso run make build        # Another fresh environment
+iso run bash -c "echo hi" # Yet another fresh environment
 ```
 
 ### Rebuilding After Changes
@@ -314,9 +358,12 @@ iso stop
 # After modifying .iso/Dockerfile
 iso build --rebuild
 
-# Then stop and restart to use new image
-iso stop
+# For ephemeral sessions, just run your command (uses new image automatically)
 iso run <your-command>
+
+# For persistent sessions, reset the container to use the new image
+ISO_SESSION=dev iso reset
+ISO_SESSION=dev iso run <your-command>
 ```
 
 ## Tips for AI Agents
@@ -326,17 +373,19 @@ iso run <your-command>
 3. **No configuration needed**: All settings are inferred from the directory structure
 4. **Service naming**: Services in `services.yml` are accessed by their key name (e.g., `mysql`, `redis`)
 5. **Image caching**: Images are cached; use `--rebuild` only when Dockerfile changes
-6. **Fresh containers by default**: Each `iso run` uses a fresh container that auto-removes after execution, ensuring clean environments
-7. **Persistent containers**: Use `--reuse` flag when you need containers to persist between commands for faster startup (e.g., interactive shells)
-8. **Network isolation**: Each project gets its own isolated network
-9. **Clean shutdown**: Use `iso stop` to clean up all resources
+6. **Ephemeral by default**: Each `iso run` uses an ephemeral session that auto-cleans after execution
+7. **Persistent sessions**: Use `--session <name>` or set `ISO_SESSION` env var for reusable containers across multiple commands
+8. **Session management**: Use `iso list` to see all sessions, `iso stop --session <name>` to clean up specific sessions
+9. **Network isolation**: Each session gets its own isolated network
 10. **Service readiness**: Add `port` to services in `services.yml` for automatic readiness checks - no manual wait loops needed
 11. **Pre/Post hooks**: Use `.iso/pre-run.sh` for migrations/setup and `.iso/post-run.sh` for cleanup tasks
 12. **Hook executability**: Remember to make hook scripts executable with `chmod +x`
+13. **Cache volumes**: Use `cache` in config.yml for shared caches (Go modules, npm, etc.) across all sessions/worktrees
 
 ## Troubleshooting
 
 - **"no .iso directory found"**: Create `.iso/Dockerfile` in your project root
 - **Services not accessible**: Verify `services.yml` syntax and service names
 - **Image build fails**: Check Dockerfile syntax and base image availability
-- **Container name conflicts**: Run `iso stop` to remove old containers
+- **"session is required" errors**: Commands like `iso start`, `iso stop`, and `iso status` require `--session` flag or `ISO_SESSION` env var
+- **Container/session conflicts**: Use `iso list` to see all sessions, then `iso stop --session <name>` or `iso stop --all-sessions` to clean up

@@ -443,7 +443,7 @@ func (cm *containerManager) runCommand(command []string, envVars []string) (int,
 	// Generate unique run ID for fresh services
 	runID := fmt.Sprintf("%d", time.Now().UnixNano())
 
-	// Start fresh services for this run (even in reuse mode)
+	// Start fresh services for this run
 	serviceContainerIDs, err := cm.startFreshServices(runID)
 	if err != nil {
 		return 0, err
