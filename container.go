@@ -734,7 +734,8 @@ func (cm *containerManager) stopContainer() error {
 			// If container doesn't exist or removal already in progress, it was auto-removed - that's fine
 			errStr := err.Error()
 			if !strings.Contains(errStr, "No such container") && !strings.Contains(errStr, "already in progress") {
-				return fmt.Errorf("failed to stop container %s: %w", c.Name, err)
+				slog.Warn("failed to stop container, continuing cleanup", "name", c.Name, "error", err)
+				continue
 			}
 			slog.Debug("container already removed or being removed", "container", c.Name)
 			continue
@@ -745,7 +746,8 @@ func (cm *containerManager) stopContainer() error {
 			// If container doesn't exist or removal already in progress, it was auto-removed - that's fine
 			errStr := err.Error()
 			if !strings.Contains(errStr, "No such container") && !strings.Contains(errStr, "already in progress") {
-				return fmt.Errorf("failed to remove container %s: %w", c.Name, err)
+				slog.Warn("failed to remove container, continuing cleanup", "name", c.Name, "error", err)
+				continue
 			}
 			slog.Debug("container already removed or being removed", "container", c.Name)
 			continue
