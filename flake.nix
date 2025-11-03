@@ -4,6 +4,11 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    quake = {
+      url = "github:mirendev/quake";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.flake-utils.follows = "flake-utils";
+    };
   };
 
   outputs =
@@ -11,6 +16,7 @@
       self,
       nixpkgs,
       flake-utils,
+      quake,
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
@@ -70,9 +76,10 @@
         };
 
         devShells.default = pkgs.mkShell {
-          buildInputs = with pkgs; [
-            go
-            golangci-lint
+          buildInputs = [
+            pkgs.go
+            pkgs.golangci-lint
+            quake.packages.${system}.default
           ];
         };
 

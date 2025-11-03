@@ -34,10 +34,34 @@
         "type": "github"
       }
     },
+    "quake": {
+      "inputs": {
+        "flake-utils": [
+          "flake-utils"
+        ],
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1762192513,
+        "narHash": "sha256-3DlNs3ZTd7XuGL6U5SuvQVI6eYDESAMQeF0d+0hmgxk=",
+        "owner": "mirendev",
+        "repo": "quake",
+        "rev": "f40fd00e066b6561b7058dcb4f3443d3a28e4442",
+        "type": "github"
+      },
+      "original": {
+        "owner": "mirendev",
+        "repo": "quake",
+        "type": "github"
+      }
+    },
     "root": {
       "inputs": {
         "flake-utils": "flake-utils",
-        "nixpkgs": "nixpkgs"
+        "nixpkgs": "nixpkgs",
+        "quake": "quake"
       }
     },
     "systems": {
