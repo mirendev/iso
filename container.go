@@ -440,16 +440,23 @@ func (cm *containerManager) stopFreshServices(serviceContainerIDs map[string]str
 // runCommand runs a command in the container and returns the exit code
 // envVars is a slice of environment variables in KEY=VALUE format
 func (cm *containerManager) runCommand(command []string, envVars []string) (int, error) {
-	// Generate unique run ID for fresh services
-	runID := fmt.Sprintf("%d", time.Now().UnixNano())
+	// Check if we're in a persistent session with services already running
+	persistentServicesRunning := cm.arePersistentServicesRunning()
 
-	// Start fresh services for this run
-	serviceContainerIDs, err := cm.startFreshServices(runID)
-	if err != nil {
-		return 0, err
+	var serviceContainerIDs map[string]string
+	var err error
+
+	if !persistentServicesRunning {
+		// Only start fresh services for ephemeral sessions
+		runID := fmt.Sprintf("%d", time.Now().UnixNano())
+
+		serviceContainerIDs, err = cm.startFreshServices(runID)
+		if err != nil {
+			return 0, err
+		}
+		// Ensure services are stopped after run completes
+		defer cm.stopFreshServices(serviceContainerIDs)
 	}
-	// Ensure services are stopped after run completes
-	defer cm.stopFreshServices(serviceContainerIDs)
 
 	// Check if container is already running
 	running, err := cm.docker.isContainerRunning(cm.containerName)
@@ -859,6 +866,34 @@ func (cm *containerManager) ensureNetwork() error {
 	}
 
 	return nil
+}
+
+// getServiceContainerName returns the container name for a persistent service
+func (cm *containerManager) getServiceContainerName(serviceName string) string {
+	if cm.session == "default" {
+		return fmt.Sprintf("%s_%s", cm.projectName, serviceName)
+	}
+	return fmt.Sprintf("%s-%s_%s", cm.projectName, cm.session, serviceName)
+}
+
+// arePersistentServicesRunning checks if persistent services are already running
+// Returns true if all services are running without iso.fresh=true label
+func (cm *containerManager) arePersistentServicesRunning() bool {
+	if len(cm.services) == 0 {
+		return false
+	}
+
+	for serviceName := range cm.services {
+		containerName := cm.getServiceContainerName(serviceName)
+
+		// Check if persistent service container exists and is running
+		running, err := cm.docker.isContainerRunning(containerName)
+		if err != nil || !running {
+			return false
+		}
+	}
+
+	return true
 }
 
 // startService starts a single service container
