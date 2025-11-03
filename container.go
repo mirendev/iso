@@ -562,6 +562,17 @@ func (cm *containerManager) runCommand(command []string, envVars []string) (int,
 		fmt.Sprintf("ISO_SESSION=%s", cm.session),
 	}
 
+	// If TTY mode, pass through TERM environment variable
+	if isTTY {
+		if termValue := os.Getenv("TERM"); termValue != "" {
+			// Special case: xterm-ghostty -> xterm-256color
+			if termValue == "xterm-ghostty" {
+				termValue = "xterm-256color"
+			}
+			execEnv = append(execEnv, fmt.Sprintf("TERM=%s", termValue))
+		}
+	}
+
 	// Add environment variables from config.yml
 	for key, value := range cm.config.Environment {
 		execEnv = append(execEnv, fmt.Sprintf("%s=%s", key, value))
