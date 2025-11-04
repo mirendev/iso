@@ -1,5 +1,5 @@
-//go:build !linux_build
-// +build !linux_build
+//go:build embed_binaries && !linux_build
+// +build embed_binaries,!linux_build
 
 package iso
 

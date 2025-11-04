@@ -23,7 +23,7 @@ task build {
 
   @echo "Building iso..."
   mkdir -p bin
-  CGO_ENABLED=0 go build -ldflags "$ldflags" -o bin/iso ./cmd/iso
+  CGO_ENABLED=0 go build -tags embed_binaries -ldflags "$ldflags" -o bin/iso ./cmd/iso
 }
 
 task install => build {
