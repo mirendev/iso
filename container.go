@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -588,6 +589,14 @@ func (cm *containerManager) runCommand(command []string, envVars []string) (int,
 	// Add command-line environment variables (these override config.yml)
 	execEnv = append(execEnv, envVars...)
 
+	// Get host user's UID and GID to run as the same user in the container
+	// This prevents creating root-owned files on the host filesystem
+	currentUser, err := user.Current()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get current user: %w", err)
+	}
+	userSpec := fmt.Sprintf("%s:%s", currentUser.Uid, currentUser.Gid)
+
 	// Execute the command in the container
 	execConfig := container.ExecOptions{
 		Cmd:          wrappedCommand,
@@ -597,6 +606,7 @@ func (cm *containerManager) runCommand(command []string, envVars []string) (int,
 		Tty:          isTTY,
 		WorkingDir:   workDir,
 		Env:          execEnv,
+		User:         userSpec, // Run as host user to preserve file ownership
 	}
 
 	execResp, err := cm.docker.client.ContainerExecCreate(cm.docker.ctx, containerID, execConfig)
