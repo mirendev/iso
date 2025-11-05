@@ -563,11 +563,20 @@ func (cm *containerManager) runCommand(command []string, envVars []string) (int,
 	// Wrap the command with /iso in-env run to handle pre/post scripts
 	wrappedCommand := append([]string{"/iso", "in-env", "run", "--"}, command...)
 
+	// Get host user's UID and GID to pass to the container
+	// The in-env wrapper will use these to run user commands as the host user
+	currentUser, err := user.Current()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get current user: %w", err)
+	}
+
 	// Build exec environment (include ISO_WORKDIR for the in-env command)
 	// Start with ISO internal variables
 	execEnv := []string{
 		fmt.Sprintf("ISO_WORKDIR=%s", cm.config.WorkDir),
 		fmt.Sprintf("ISO_SESSION=%s", cm.session),
+		fmt.Sprintf("ISO_UID=%s", currentUser.Uid),
+		fmt.Sprintf("ISO_GID=%s", currentUser.Gid),
 	}
 
 	// If TTY mode, pass through TERM environment variable
@@ -589,15 +598,8 @@ func (cm *containerManager) runCommand(command []string, envVars []string) (int,
 	// Add command-line environment variables (these override config.yml)
 	execEnv = append(execEnv, envVars...)
 
-	// Get host user's UID and GID to run as the same user in the container
-	// This prevents creating root-owned files on the host filesystem
-	currentUser, err := user.Current()
-	if err != nil {
-		return 0, fmt.Errorf("failed to get current user: %w", err)
-	}
-	userSpec := fmt.Sprintf("%s:%s", currentUser.Uid, currentUser.Gid)
-
 	// Execute the command in the container
+	// The container runs as root, but in-env will switch to ISO_UID:ISO_GID for user commands
 	execConfig := container.ExecOptions{
 		Cmd:          wrappedCommand,
 		AttachStdout: true,
@@ -606,7 +608,6 @@ func (cm *containerManager) runCommand(command []string, envVars []string) (int,
 		Tty:          isTTY,
 		WorkingDir:   workDir,
 		Env:          execEnv,
-		User:         userSpec, // Run as host user to preserve file ownership
 	}
 
 	execResp, err := cm.docker.client.ContainerExecCreate(cm.docker.ctx, containerID, execConfig)
