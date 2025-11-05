@@ -154,6 +154,26 @@ echo "Cleanup complete"
 
 **Note**: Both scripts must be executable (`chmod +x .iso/pre-run.sh .iso/post-run.sh`)
 
+### Environment Variables
+
+ISO automatically sets the following environment variables inside the container:
+
+- **ISO_WORKDIR**: The container path where your project is mounted (default: `/workspace`)
+- **ISO_SESSION**: The name of the current session
+- **ISO_UID**: The UID of the host user running the `iso` command
+- **ISO_GID**: The GID of the host user running the `iso` command
+
+The ISO_UID and ISO_GID variables are useful when you need to run commands as the host user (to preserve file ownership) while allowing setup scripts to run as root. For example:
+
+```bash
+#!/bin/bash
+# Run setup as root
+apt-get update && apt-get install -y some-package
+
+# Then run user code as the host user to preserve file ownership
+su -s /bin/bash "#${ISO_UID}" -c "your-command-here"
+```
+
 ## Naming Conventions
 
 All resources are automatically named based on your project directory:
