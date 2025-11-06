@@ -465,3 +465,97 @@ func (d *dockerClient) listProjectContainersAllSessions(projectName string) ([]i
 
 	return isoContainers, nil
 }
+
+// listStaleEphemeralContainers finds exited ephemeral containers for a project
+func (d *dockerClient) listStaleEphemeralContainers(projectName string) ([]isoContainerInfo, error) {
+	containers, err := d.client.ContainerList(d.ctx, container.ListOptions{
+		All: true,
+		Filters: filters.NewArgs(
+			filters.Arg("label", "iso.managed=true"),
+			filters.Arg("label", fmt.Sprintf("iso.project.name=%s", projectName)),
+			filters.Arg("status", "exited"),
+		),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list containers: %w", err)
+	}
+
+	var staleContainers []isoContainerInfo
+	for _, c := range containers {
+		// Only include ephemeral sessions (those with "eph-" prefix or "fresh" label)
+		session := c.Labels["iso.session"]
+		isFresh := c.Labels["iso.fresh"] == "true"
+		isEphemeral := strings.HasPrefix(session, "eph-") || isFresh
+
+		if !isEphemeral {
+			continue
+		}
+
+		name := ""
+		if len(c.Names) > 0 {
+			name = strings.TrimPrefix(c.Names[0], "/")
+		}
+
+		staleContainers = append(staleContainers, isoContainerInfo{
+			ID:          c.ID,
+			Name:        name,
+			ShortName:   c.Labels["iso.name"],
+			ProjectName: c.Labels["iso.project.name"],
+			ProjectDir:  c.Labels["iso.project.dir"],
+			Session:     c.Labels["iso.session"],
+			Status:      c.Status,
+			Fresh:       isFresh,
+			IsService:   c.Labels["iso.service"] == "true",
+			ServiceName: c.Labels["iso.service.name"],
+		})
+	}
+
+	return staleContainers, nil
+}
+
+// listDanglingVolumes finds volumes that are not in use by any container
+func (d *dockerClient) listDanglingVolumes() ([]string, error) {
+	volumes, err := d.client.VolumeList(d.ctx, volume.ListOptions{
+		Filters: filters.NewArgs(
+			filters.Arg("dangling", "true"),
+		),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list volumes: %w", err)
+	}
+
+	var volumeNames []string
+	for _, vol := range volumes.Volumes {
+		volumeNames = append(volumeNames, vol.Name)
+	}
+
+	return volumeNames, nil
+}
+
+// listUnusedNetworks finds networks with no connected containers
+func (d *dockerClient) listUnusedNetworks() ([]string, error) {
+	networks, err := d.client.NetworkList(d.ctx, network.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list networks: %w", err)
+	}
+
+	var unusedNetworks []string
+	for _, net := range networks {
+		// Skip built-in networks
+		if net.Name == "bridge" || net.Name == "host" || net.Name == "none" {
+			continue
+		}
+
+		// Check if network has any connected containers
+		inspect, err := d.client.NetworkInspect(d.ctx, net.ID, network.InspectOptions{})
+		if err != nil {
+			continue
+		}
+
+		if len(inspect.Containers) == 0 {
+			unusedNetworks = append(unusedNetworks, net.Name)
+		}
+	}
+
+	return unusedNetworks, nil
+}

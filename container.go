@@ -104,7 +104,7 @@ func newContainerManager(session string) (*containerManager, error) {
 		return nil, fmt.Errorf("failed to extract Linux binary: %w", err)
 	}
 
-	return &containerManager{
+	cm := &containerManager{
 		docker:              docker,
 		imageName:           imageName,
 		containerName:       containerName,
@@ -119,7 +119,12 @@ func newContainerManager(session string) (*containerManager, error) {
 		isoDir:              isoDir,
 		tempIsoPath:         isoPath,
 		config:              config,
-	}, nil
+	}
+
+	// Clean up stale ephemeral resources on startup
+	cm.cleanupStaleResources()
+
+	return cm, nil
 }
 
 // close closes the container manager and Docker client
@@ -266,6 +271,9 @@ func (cm *containerManager) startContainer() (string, error) {
 		binds = append(binds, fmt.Sprintf("%s:%s", volumeName, cachePath))
 	}
 
+	// Check if this is an ephemeral session
+	isEphemeral := strings.HasPrefix(cm.session, "eph-")
+
 	// Create container
 	containerConfig := &container.Config{
 		Image:      cm.imageName,
@@ -278,12 +286,15 @@ func (cm *containerManager) startContainer() (string, error) {
 			"iso.project.dir":  cm.projectRoot,
 			"iso.session":      cm.session,
 			"iso.name":         "shell",
+			"iso.ephemeral":    fmt.Sprintf("%t", isEphemeral),
 		},
 	}
 
+	// Use AutoRemove for ephemeral containers - they should be cleaned up automatically
+	// Persistent containers need AutoRemove=false so they survive between runs
 	hostConfig := &container.HostConfig{
 		Binds:      binds,
-		AutoRemove: false,
+		AutoRemove: isEphemeral,
 		Privileged: cm.config.Privileged,
 	}
 
@@ -793,7 +804,7 @@ func (cm *containerManager) stopContainer() error {
 		}
 	}
 
-	// Remove volumes
+	// Remove session-specific volumes
 	for _, volumePath := range cm.config.Volumes {
 		volumeName := cm.getVolumeNameForPath(volumePath)
 
@@ -807,6 +818,23 @@ func (cm *containerManager) stopContainer() error {
 			slog.Debug("removing volume", "volume", volumeName, "path", volumePath)
 			if err := cm.docker.removeVolume(volumeName); err != nil {
 				slog.Warn("failed to remove volume", "volume", volumeName, "error", err)
+			}
+		}
+	}
+
+	// For ephemeral sessions, also try to remove any dangling volumes that were created
+	// This is a best-effort cleanup in case volumes weren't properly removed
+	if strings.HasPrefix(cm.session, "eph-") {
+		danglingVolumes, err := cm.docker.listDanglingVolumes()
+		if err == nil {
+			sessionPrefix := fmt.Sprintf("%s-%s-", cm.worktreeProjectName, cm.session)
+			for _, volumeName := range danglingVolumes {
+				if strings.HasPrefix(volumeName, sessionPrefix) {
+					slog.Debug("removing dangling ephemeral volume", "volume", volumeName)
+					if err := cm.docker.removeVolume(volumeName); err != nil {
+						slog.Debug("failed to remove dangling volume", "volume", volumeName, "error", err)
+					}
+				}
 			}
 		}
 	}
@@ -1126,4 +1154,100 @@ func (cm *containerManager) pullImage() error {
 
 	_, err = io.Copy(os.Stdout, out)
 	return err
+}
+
+// cleanupStaleResources removes stale ephemeral containers, volumes, and networks
+// This runs on startup to recover from ungraceful shutdowns
+func (cm *containerManager) cleanupStaleResources() {
+	// Clean up stale ephemeral containers
+	staleContainers, err := cm.docker.listStaleEphemeralContainers(cm.worktreeProjectName)
+	if err != nil {
+		slog.Debug("failed to list stale containers", "error", err)
+		return
+	}
+
+	if len(staleContainers) > 0 {
+		slog.Debug("found stale ephemeral containers", "count", len(staleContainers))
+
+		timeout := 2
+		for _, c := range staleContainers {
+			slog.Debug("removing stale container", "name", c.Name, "session", c.Session)
+
+			// Try to stop (may already be stopped)
+			_ = cm.docker.client.ContainerStop(cm.docker.ctx, c.ID, container.StopOptions{
+				Timeout: &timeout,
+			})
+
+			// Remove the container
+			if err := cm.docker.client.ContainerRemove(cm.docker.ctx, c.ID, container.RemoveOptions{}); err != nil {
+				errStr := err.Error()
+				if !strings.Contains(errStr, "No such container") && !strings.Contains(errStr, "already in progress") {
+					slog.Debug("failed to remove stale container", "name", c.Name, "error", err)
+				}
+			}
+		}
+	}
+
+	// Clean up dangling volumes that match our project patterns
+	danglingVolumes, err := cm.docker.listDanglingVolumes()
+	if err != nil {
+		slog.Debug("failed to list dangling volumes", "error", err)
+		return
+	}
+
+	if len(danglingVolumes) > 0 {
+		// Filter to only volumes matching our project patterns
+		projectPrefixes := []string{
+			fmt.Sprintf("%s-eph-", cm.worktreeProjectName),
+			fmt.Sprintf("%s-ephemeral-", cm.worktreeProjectName),
+		}
+
+		for _, volumeName := range danglingVolumes {
+			shouldRemove := false
+			for _, prefix := range projectPrefixes {
+				if strings.HasPrefix(volumeName, prefix) {
+					shouldRemove = true
+					break
+				}
+			}
+
+			if shouldRemove {
+				slog.Debug("removing dangling ephemeral volume", "volume", volumeName)
+				if err := cm.docker.removeVolume(volumeName); err != nil {
+					slog.Debug("failed to remove dangling volume", "volume", volumeName, "error", err)
+				}
+			}
+		}
+	}
+
+	// Clean up unused networks for this project
+	unusedNetworks, err := cm.docker.listUnusedNetworks()
+	if err != nil {
+		slog.Debug("failed to list unused networks", "error", err)
+		return
+	}
+
+	if len(unusedNetworks) > 0 {
+		projectNetworkPrefixes := []string{
+			fmt.Sprintf("%s-eph-", cm.worktreeProjectName),
+			fmt.Sprintf("%s-ephemeral-", cm.worktreeProjectName),
+		}
+
+		for _, networkName := range unusedNetworks {
+			shouldRemove := false
+			for _, prefix := range projectNetworkPrefixes {
+				if strings.HasPrefix(networkName, prefix) {
+					shouldRemove = true
+					break
+				}
+			}
+
+			if shouldRemove {
+				slog.Debug("removing unused ephemeral network", "network", networkName)
+				if err := cm.docker.removeNetwork(networkName); err != nil {
+					slog.Debug("failed to remove unused network", "network", networkName, "error", err)
+				}
+			}
+		}
+	}
 }
