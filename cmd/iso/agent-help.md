@@ -39,6 +39,11 @@ volumes:
 cache:
   - /go/pkg/mod
   - /root/.cache/go-build
+
+# Add custom host-to-IP mappings (optional)
+extra_hosts:
+  - "myhost:192.168.1.100"
+  - "host.docker.internal:host-gateway"
 ```
 
 **Available Options**:
@@ -51,6 +56,8 @@ cache:
 
 - **cache** (list of strings, optional): List of container paths that should be mounted as shared cache volumes. Cache volumes are **shared across all worktrees** of the same repository and persist until you run `iso prune`. Ideal for package manager caches (Go modules, npm, pip, cargo) that can be safely shared to avoid redundant downloads.
 
+- **extra_hosts** (list of strings, optional): List of custom host-to-IP mappings to add to the container's `/etc/hosts` file. Each entry should be in the format `"hostname:ip"`. Use `host-gateway` as a special IP to refer to the host's gateway IP. This is particularly useful on Linux for accessing services running on the host machine.
+
 Example:
 ```yaml
 privileged: true
@@ -61,6 +68,8 @@ cache:
   - /go/pkg/mod               # Shared Go module cache
   - /root/.cache/go-build     # Shared Go build cache
   - /root/.cache/pip          # Shared Python package cache
+extra_hosts:
+  - "host.docker.internal:host-gateway"  # Access host services on Linux
 ```
 
 **Volume Naming**:
@@ -110,6 +119,8 @@ services:
       MYSQL_DATABASE: testdb
       MYSQL_USER: testuser
       MYSQL_PASSWORD: testpass
+    extra_hosts:                          # Optional: Custom host mappings
+      - "host.docker.internal:host-gateway"
 
   redis:
     image: redis:alpine
@@ -119,6 +130,8 @@ services:
 ```
 
 **Service Readiness**: When a service specifies a `port`, ISO will automatically wait for that service to be reachable on that port before running commands. This eliminates the need for manual wait loops in pre-run.sh scripts.
+
+**Extra Hosts**: Services can specify `extra_hosts` to add custom host-to-IP mappings, allowing service containers to access external hosts or services running on the Docker host.
 
 ### .iso/pre-run.sh and .iso/post-run.sh
 

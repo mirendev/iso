@@ -285,6 +285,7 @@ func (cm *containerManager) startContainer() (string, error) {
 		Binds:      binds,
 		AutoRemove: false,
 		Privileged: cm.config.Privileged,
+		ExtraHosts: cm.config.ExtraHosts,
 	}
 
 	// Set up network configuration if we have services
@@ -383,6 +384,7 @@ func (cm *containerManager) startFreshServices(runID string) (map[string]string,
 
 		hostConfig := &container.HostConfig{
 			AutoRemove: true, // Auto-remove when stopped
+			ExtraHosts: config.ExtraHosts,
 		}
 
 		networkConfig := &network.NetworkingConfig{
@@ -981,7 +983,9 @@ func (cm *containerManager) startService(serviceName string, config ServiceConfi
 		containerConfig.Cmd = config.Command
 	}
 
-	hostConfig := &container.HostConfig{}
+	hostConfig := &container.HostConfig{
+		ExtraHosts: config.ExtraHosts,
+	}
 
 	networkConfig := &network.NetworkingConfig{
 		EndpointsConfig: map[string]*network.EndpointSettings{

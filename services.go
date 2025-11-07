@@ -17,6 +17,7 @@ type Config struct {
 	Volumes     []string          `yaml:"volumes"`
 	Cache       []string          `yaml:"cache"`
 	Environment map[string]string `yaml:"environment"`
+	ExtraHosts  []string          `yaml:"extra_hosts"`
 }
 
 // ServiceConfig defines configuration for a service container
@@ -25,6 +26,7 @@ type ServiceConfig struct {
 	Environment map[string]string `yaml:"environment"`
 	Command     []string          `yaml:"command,omitempty"`
 	Port        int               `yaml:"port,omitempty"`
+	ExtraHosts  []string          `yaml:"extra_hosts"`
 }
 
 // ServicesFile represents the structure of services.yml
