@@ -1,6 +1,6 @@
 module miren.dev/iso
 
-go 1.25.1
+go 1.24.5
 
 require (
 	github.com/docker/docker v28.5.1+incompatible
