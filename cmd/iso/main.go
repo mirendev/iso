@@ -169,24 +169,60 @@ func registerRunCommand(dispatcher *mflags.Dispatcher) {
 		}
 		defer client.Close()
 
-		exitCode, err := client.Run(actualCommand, envVars)
+		// Set up signal handling for graceful cleanup on interrupt
+		// This ensures ephemeral resources are cleaned up even if Ctrl+C is pressed
+		var cleanupDone bool
+		cleanupOnce := func() {
+			if cleanupDone {
+				return
+			}
+			cleanupDone = true
 
-		// If ephemeral session, clean up everything after run
-		if isEphemeral {
-			if stopErr := client.Stop(); stopErr != nil {
-				slog.Warn("failed to clean up ephemeral session", "error", stopErr)
+			// If ephemeral session, clean up everything
+			if isEphemeral {
+				if stopErr := client.Stop(); stopErr != nil {
+					slog.Warn("failed to clean up ephemeral session", "error", stopErr)
+				}
 			}
 		}
 
-		if err != nil {
-			return err
-		}
+		// Ensure cleanup runs on exit
+		defer cleanupOnce()
 
-		if exitCode != 0 {
-			return &ExitError{Code: exitCode}
-		}
+		// Set up signal handler for interrupts
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+		defer signal.Stop(sigChan)
 
-		return nil
+		// Run command in a goroutine so we can handle signals
+		type result struct {
+			exitCode int
+			err      error
+		}
+		resultChan := make(chan result, 1)
+
+		go func() {
+			exitCode, err := client.Run(actualCommand, envVars)
+			resultChan <- result{exitCode: exitCode, err: err}
+		}()
+
+		// Wait for either command completion or signal
+		select {
+		case res := <-resultChan:
+			// Command completed normally
+			if res.err != nil {
+				return res.err
+			}
+			if res.exitCode != 0 {
+				return &ExitError{Code: res.exitCode}
+			}
+			return nil
+
+		case sig := <-sigChan:
+			// Received interrupt signal - cleanup will happen via defer
+			slog.Debug("received signal, cleaning up", "signal", sig)
+			return &ExitError{Code: 130} // Standard exit code for SIGINT
+		}
 	}
 
 	cmd := mflags.NewCommand(fs, handler,
