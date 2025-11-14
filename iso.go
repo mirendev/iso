@@ -145,6 +145,14 @@ type IsoContainer struct {
 	ServiceName string
 }
 
+// OrphanedSession represents a session whose project directory no longer exists
+type OrphanedSession struct {
+	ProjectDir  string
+	ProjectName string
+	Session     string
+	Containers  []IsoContainer
+}
+
 // List returns all ISO-managed containers
 func (c *Client) List() ([]IsoContainer, error) {
 	dockerContainers, err := c.containerManager.docker.listIsoContainers()
@@ -202,6 +210,200 @@ func ListAll() ([]IsoContainer, error) {
 	}
 
 	return result, nil
+}
+
+// ListOrphaned returns all ISO sessions whose project directories no longer exist
+func ListOrphaned() ([]OrphanedSession, error) {
+	containers, err := ListAll()
+	if err != nil {
+		return nil, err
+	}
+
+	// Group by project directory + session
+	type sessionKey struct {
+		ProjectDir string
+		Session    string
+	}
+	sessions := make(map[sessionKey][]IsoContainer)
+
+	for _, c := range containers {
+		key := sessionKey{c.ProjectDir, c.Session}
+		sessions[key] = append(sessions[key], c)
+	}
+
+	// Check which directories don't exist
+	var orphaned []OrphanedSession
+	for key, containers := range sessions {
+		if _, err := os.Stat(key.ProjectDir); os.IsNotExist(err) {
+			orphaned = append(orphaned, OrphanedSession{
+				ProjectDir:  key.ProjectDir,
+				ProjectName: containers[0].ProjectName,
+				Session:     key.Session,
+				Containers:  containers,
+			})
+		}
+	}
+
+	return orphaned, nil
+}
+
+// CleanupOrphaned stops and removes all orphaned sessions
+// Returns the number of containers cleaned up
+func CleanupOrphaned(dryRun bool) (int, error) {
+	orphaned, err := ListOrphaned()
+	if err != nil {
+		return 0, err
+	}
+
+	if len(orphaned) == 0 {
+		return 0, nil
+	}
+
+	docker, err := newDockerClient()
+	if err != nil {
+		return 0, err
+	}
+	defer docker.close()
+
+	totalContainers := 0
+	networksToRemove := make(map[string]bool)
+
+	for _, session := range orphaned {
+		slog.Info("cleaning up orphaned session",
+			"project", session.ProjectName,
+			"session", session.Session,
+			"dir", session.ProjectDir,
+			"containers", len(session.Containers))
+
+		if dryRun {
+			totalContainers += len(session.Containers)
+			continue
+		}
+
+		// Stop and remove each container
+		timeout := 10
+		for _, c := range session.Containers {
+			// Stop the container
+			if err := docker.client.ContainerStop(docker.ctx, c.ID, container.StopOptions{
+				Timeout: &timeout,
+			}); err != nil {
+				errStr := err.Error()
+				if !strings.Contains(errStr, "already in progress") && !strings.Contains(errStr, "No such container") {
+					slog.Warn("failed to stop container", "name", c.Name, "error", err)
+				}
+			}
+
+			// Remove the container
+			if err := docker.client.ContainerRemove(docker.ctx, c.ID, container.RemoveOptions{}); err != nil {
+				errStr := err.Error()
+				if !strings.Contains(errStr, "already in progress") && !strings.Contains(errStr, "No such container") {
+					slog.Warn("failed to remove container", "name", c.Name, "error", err)
+				}
+			}
+
+			totalContainers++
+		}
+
+		// Track network to remove
+		if session.Session == "default" {
+			networksToRemove[fmt.Sprintf("%s-network", session.ProjectName)] = true
+		} else {
+			networksToRemove[fmt.Sprintf("%s-%s-network", session.ProjectName, session.Session)] = true
+		}
+	}
+
+	if !dryRun && len(networksToRemove) > 0 {
+		// Give Docker a moment to clean up container endpoints
+		time.Sleep(100 * time.Millisecond)
+
+		// Remove networks
+		for networkName := range networksToRemove {
+			if err := docker.removeNetwork(networkName); err != nil {
+				if !strings.Contains(err.Error(), "not found") {
+					slog.Warn("failed to remove network", "network", networkName, "error", err)
+				}
+			}
+		}
+	}
+
+	return totalContainers, nil
+}
+
+// CleanupOrphanedSessions stops and removes specific orphaned sessions
+// Returns the number of containers cleaned up
+func CleanupOrphanedSessions(sessions []OrphanedSession, dryRun bool) (int, error) {
+	if len(sessions) == 0 {
+		return 0, nil
+	}
+
+	docker, err := newDockerClient()
+	if err != nil {
+		return 0, err
+	}
+	defer docker.close()
+
+	totalContainers := 0
+	networksToRemove := make(map[string]bool)
+
+	for _, session := range sessions {
+		slog.Info("cleaning up orphaned session",
+			"project", session.ProjectName,
+			"session", session.Session,
+			"dir", session.ProjectDir,
+			"containers", len(session.Containers))
+
+		if dryRun {
+			totalContainers += len(session.Containers)
+			continue
+		}
+
+		// Stop and remove each container
+		timeout := 10
+		for _, c := range session.Containers {
+			// Stop the container
+			if err := docker.client.ContainerStop(docker.ctx, c.ID, container.StopOptions{
+				Timeout: &timeout,
+			}); err != nil {
+				errStr := err.Error()
+				if !strings.Contains(errStr, "already in progress") && !strings.Contains(errStr, "No such container") {
+					slog.Warn("failed to stop container", "name", c.Name, "error", err)
+				}
+			}
+
+			// Remove the container
+			if err := docker.client.ContainerRemove(docker.ctx, c.ID, container.RemoveOptions{}); err != nil {
+				errStr := err.Error()
+				if !strings.Contains(errStr, "already in progress") && !strings.Contains(errStr, "No such container") {
+					slog.Warn("failed to remove container", "name", c.Name, "error", err)
+				}
+			}
+
+			totalContainers++
+		}
+
+		// Track network to remove
+		if session.Session == "default" {
+			networksToRemove[fmt.Sprintf("%s-network", session.ProjectName)] = true
+		} else {
+			networksToRemove[fmt.Sprintf("%s-%s-network", session.ProjectName, session.Session)] = true
+		}
+	}
+
+	if !dryRun && len(networksToRemove) > 0 {
+		// Give Docker a moment to clean up container endpoints
+		time.Sleep(100 * time.Millisecond)
+
+		// Remove networks
+		for networkName := range networksToRemove {
+			if err := docker.removeNetwork(networkName); err != nil {
+				if !strings.Contains(err.Error(), "not found") {
+					slog.Warn("failed to remove network", "network", networkName, "error", err)
+				}
+			}
+		}
+	}
+
+	return totalContainers, nil
 }
 
 // StopAll stops and removes all ISO-managed containers and networks across all projects

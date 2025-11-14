@@ -72,6 +72,7 @@ func run() error {
 	registerStatusCommand(dispatcher)
 	registerListCommand(dispatcher)
 	registerPruneCommand(dispatcher)
+	registerCleanupCommand(dispatcher)
 	registerInitCommand(dispatcher)
 	registerInternalInitCommand(dispatcher)
 	registerInEnvCommand(dispatcher)
@@ -421,7 +422,13 @@ func registerStatusCommand(dispatcher *mflags.Dispatcher) {
 func registerListCommand(dispatcher *mflags.Dispatcher) {
 	fs := mflags.NewFlagSet("list")
 
+	orphaned := fs.Bool("orphaned", 'o', false, "Show only orphaned sessions (project directory missing)")
+
 	handler := func(fs *mflags.FlagSet, args []string) error {
+		if *orphaned {
+			return listOrphaned()
+		}
+
 		containers, err := iso.ListAll()
 		if err != nil {
 			return err
@@ -473,6 +480,44 @@ func registerListCommand(dispatcher *mflags.Dispatcher) {
 	dispatcher.Dispatch("list", cmd)
 }
 
+func listOrphaned() error {
+	orphaned, err := iso.ListOrphaned()
+	if err != nil {
+		return err
+	}
+
+	if len(orphaned) == 0 {
+		fmt.Println("No orphaned ISO sessions found")
+		return nil
+	}
+
+	fmt.Println("Orphaned ISO sessions (project directory no longer exists):\n")
+
+	totalContainers := 0
+	for _, session := range orphaned {
+		fmt.Printf("%s:\n", session.ProjectDir)
+		fmt.Printf("  %-12s %-35s %-18s %s\n",
+			"CONTAINER ID", "NAME", "SESSION", "STATUS")
+
+		for _, c := range session.Containers {
+			status := c.Status
+			if c.IsService {
+				status += " (service: " + c.ServiceName + ")"
+			}
+
+			fmt.Printf("  %-12s %-35s %-18s %s\n",
+				c.ID[:12], c.ShortName, c.Session, status)
+			totalContainers++
+		}
+		fmt.Println()
+	}
+
+	fmt.Printf("Total orphaned containers: %d\n", totalContainers)
+	fmt.Println("To clean up orphaned sessions, run: iso cleanup --orphaned")
+
+	return nil
+}
+
 // registerPruneCommand registers the 'prune' command
 func registerPruneCommand(dispatcher *mflags.Dispatcher) {
 	fs := mflags.NewFlagSet("prune")
@@ -495,6 +540,127 @@ func registerPruneCommand(dispatcher *mflags.Dispatcher) {
 	)
 
 	dispatcher.Dispatch("prune", cmd)
+}
+
+// registerCleanupCommand registers the 'cleanup' command
+func registerCleanupCommand(dispatcher *mflags.Dispatcher) {
+	fs := mflags.NewFlagSet("cleanup")
+
+	orphaned := fs.Bool("orphaned", 'o', false, "Clean up orphaned sessions")
+	interactive := fs.Bool("interactive", 'i', false, "Ask for confirmation per session")
+	dryRun := fs.Bool("dry-run", 'd', false, "Show what would be cleaned without doing it")
+
+	handler := func(fs *mflags.FlagSet, args []string) error {
+		if !*orphaned {
+			return fmt.Errorf("cleanup command requires --orphaned flag")
+		}
+
+		orphanedSessions, err := iso.ListOrphaned()
+		if err != nil {
+			return err
+		}
+
+		if len(orphanedSessions) == 0 {
+			fmt.Println("No orphaned sessions to clean up")
+			return nil
+		}
+
+		if *interactive {
+			return cleanupInteractive(orphanedSessions, *dryRun)
+		}
+
+		return cleanupAll(orphanedSessions, *dryRun)
+	}
+
+	cmd := mflags.NewCommand(fs, handler,
+		mflags.WithUsage("Clean up orphaned sessions whose project directories no longer exist"),
+	)
+
+	dispatcher.Dispatch("cleanup", cmd)
+}
+
+func cleanupInteractive(sessions []iso.OrphanedSession, dryRun bool) error {
+	fmt.Printf("Found %d orphaned session(s):\n\n", len(sessions))
+
+	var sessionsToClean []iso.OrphanedSession
+
+	for _, session := range sessions {
+		serviceCount := 0
+		for _, c := range session.Containers {
+			if c.IsService {
+				serviceCount++
+			}
+		}
+
+		fmt.Printf("Session: %s / %s\n", session.ProjectName, session.Session)
+		fmt.Printf("  Project directory: %s\n", session.ProjectDir)
+		fmt.Printf("  Status: Directory not found\n")
+		fmt.Printf("  Containers: %d", len(session.Containers))
+		if serviceCount > 0 {
+			fmt.Printf(" (%d service(s))", serviceCount)
+		}
+		fmt.Println()
+		fmt.Println()
+
+		if dryRun {
+			fmt.Println("  [DRY RUN] Would stop and remove this session")
+			sessionsToClean = append(sessionsToClean, session)
+		} else {
+			fmt.Print("  Stop and remove this session? [y/N]: ")
+			var response string
+			fmt.Scanln(&response)
+
+			if response == "y" || response == "Y" {
+				sessionsToClean = append(sessionsToClean, session)
+				fmt.Printf("  ✓ Marked for cleanup\n")
+			} else {
+				fmt.Println("  Skipped")
+			}
+		}
+		fmt.Println()
+	}
+
+	if len(sessionsToClean) == 0 {
+		fmt.Println("No sessions selected for cleanup")
+		return nil
+	}
+
+	totalContainers := 0
+	for _, s := range sessionsToClean {
+		totalContainers += len(s.Containers)
+	}
+
+	if dryRun {
+		fmt.Printf("[DRY RUN] Would clean up %d session(s) (%d container(s))\n",
+			len(sessionsToClean), totalContainers)
+	} else {
+		// Clean up the selected sessions
+		count, err := iso.CleanupOrphanedSessions(sessionsToClean, false)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Cleaned up %d session(s) (%d container(s))\n",
+			len(sessionsToClean), count)
+	}
+
+	return nil
+}
+
+func cleanupAll(sessions []iso.OrphanedSession, dryRun bool) error {
+	totalContainers, err := iso.CleanupOrphaned(dryRun)
+	if err != nil {
+		return err
+	}
+
+	if dryRun {
+		fmt.Printf("[DRY RUN] Would clean up %d orphaned session(s) (%d container(s))\n",
+			len(sessions), totalContainers)
+	} else {
+		fmt.Printf("Cleaned up %d orphaned session(s) (%d container(s))\n",
+			len(sessions), totalContainers)
+	}
+
+	return nil
 }
 
 // reapZombies reaps any zombie child processes
