@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"strings"
 
@@ -40,6 +41,55 @@ func newDockerClient() (*dockerClient, error) {
 // close closes the Docker client connection
 func (d *dockerClient) close() error {
 	return d.client.Close()
+}
+
+// stopAndRemoveContainer stops and removes a container, using force if stop fails
+// Returns true if the container was removed, false if it didn't exist
+func (d *dockerClient) stopAndRemoveContainer(containerID, containerName string, timeout int) (bool, error) {
+	// Track if we need to force remove
+	forceRemove := false
+
+	// Stop the container
+	if err := d.client.ContainerStop(d.ctx, containerID, container.StopOptions{
+		Timeout: &timeout,
+	}); err != nil {
+		// If container doesn't exist or removal already in progress, skip
+		errStr := err.Error()
+		if strings.Contains(errStr, "No such container") || strings.Contains(errStr, "already in progress") {
+			slog.Debug("container already removed or being removed", "container", containerName)
+			return false, nil
+		}
+		// Container won't stop - we'll need to force remove it
+		slog.Warn("failed to stop container, will force remove", "name", containerName, "error", err)
+		forceRemove = true
+	}
+
+	// Remove the container (force if stop failed)
+	if err := d.client.ContainerRemove(d.ctx, containerID, container.RemoveOptions{
+		Force: forceRemove,
+	}); err != nil {
+		// If container doesn't exist or removal already in progress, that's fine
+		errStr := err.Error()
+		if strings.Contains(errStr, "No such container") || strings.Contains(errStr, "already in progress") {
+			slog.Debug("container already removed or being removed", "container", containerName)
+			return false, nil
+		}
+
+		// Check for zombie container that Docker daemon can't kill
+		if strings.Contains(errStr, "did not receive an exit event") {
+			slog.Error("container is in zombie state - Docker daemon cannot kill it",
+				"name", containerName,
+				"id", containerID,
+				"error", err,
+				"solution", "Try: docker restart OR sudo systemctl restart docker")
+			return false, fmt.Errorf("container in zombie state (restart Docker daemon): %w", err)
+		}
+
+		slog.Warn("failed to remove container", "name", containerName, "error", err)
+		return false, err
+	}
+
+	return true, nil
 }
 
 // getArchitecture returns the architecture Docker is using for containers

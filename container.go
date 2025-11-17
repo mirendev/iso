@@ -733,16 +733,9 @@ func (cm *containerManager) resetContainer() error {
 		return err
 	}
 
-	// Stop the container
+	// Stop and remove the container
 	timeout := 10
-	if err := cm.docker.client.ContainerStop(cm.docker.ctx, containerID, container.StopOptions{
-		Timeout: &timeout,
-	}); err != nil {
-		return fmt.Errorf("failed to stop container: %w", err)
-	}
-
-	// Remove the container
-	if err := cm.docker.client.ContainerRemove(cm.docker.ctx, containerID, container.RemoveOptions{}); err != nil {
+	if _, err := cm.docker.stopAndRemoveContainer(containerID, cm.containerName, timeout); err != nil {
 		return fmt.Errorf("failed to remove container: %w", err)
 	}
 
@@ -769,33 +762,15 @@ func (cm *containerManager) stopContainer() error {
 	for _, c := range containers {
 		slog.Debug("stopping container", "name", c.Name, "service", c.IsService)
 
-		// Stop the container (may already be stopped/removed if it had AutoRemove)
-		if err := cm.docker.client.ContainerStop(cm.docker.ctx, c.ID, container.StopOptions{
-			Timeout: &timeout,
-		}); err != nil {
-			// If container doesn't exist or removal already in progress, it was auto-removed - that's fine
-			errStr := err.Error()
-			if !strings.Contains(errStr, "No such container") && !strings.Contains(errStr, "already in progress") {
-				slog.Warn("failed to stop container, continuing cleanup", "name", c.Name, "error", err)
-				continue
-			}
-			slog.Debug("container already removed or being removed", "container", c.Name)
+		removed, err := cm.docker.stopAndRemoveContainer(c.ID, c.Name, timeout)
+		if err != nil {
+			slog.Warn("failed to remove container, continuing cleanup", "name", c.Name, "error", err)
 			continue
 		}
 
-		// Remove the container
-		if err := cm.docker.client.ContainerRemove(cm.docker.ctx, c.ID, container.RemoveOptions{}); err != nil {
-			// If container doesn't exist or removal already in progress, it was auto-removed - that's fine
-			errStr := err.Error()
-			if !strings.Contains(errStr, "No such container") && !strings.Contains(errStr, "already in progress") {
-				slog.Warn("failed to remove container, continuing cleanup", "name", c.Name, "error", err)
-				continue
-			}
-			slog.Debug("container already removed or being removed", "container", c.Name)
-			continue
+		if removed {
+			slog.Debug("container stopped and removed", "container", c.Name)
 		}
-
-		slog.Debug("container stopped and removed", "container", c.Name)
 	}
 
 	// Remove the network
@@ -1094,16 +1069,9 @@ func (cm *containerManager) stopAllServices() error {
 			return err
 		}
 
-		// Stop the container
+		// Stop and remove the service container
 		timeout := 10
-		if err := cm.docker.client.ContainerStop(cm.docker.ctx, containerID, container.StopOptions{
-			Timeout: &timeout,
-		}); err != nil {
-			return fmt.Errorf("failed to stop service %s: %w", serviceName, err)
-		}
-
-		// Remove the container
-		if err := cm.docker.client.ContainerRemove(cm.docker.ctx, containerID, container.RemoveOptions{}); err != nil {
+		if _, err := cm.docker.stopAndRemoveContainer(containerID, containerName, timeout); err != nil {
 			return fmt.Errorf("failed to remove service %s: %w", serviceName, err)
 		}
 	}

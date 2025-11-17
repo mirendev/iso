@@ -283,24 +283,9 @@ func CleanupOrphaned(dryRun bool) (int, error) {
 		// Stop and remove each container
 		timeout := 10
 		for _, c := range session.Containers {
-			// Stop the container
-			if err := docker.client.ContainerStop(docker.ctx, c.ID, container.StopOptions{
-				Timeout: &timeout,
-			}); err != nil {
-				errStr := err.Error()
-				if !strings.Contains(errStr, "already in progress") && !strings.Contains(errStr, "No such container") {
-					slog.Warn("failed to stop container", "name", c.Name, "error", err)
-				}
+			if _, err := docker.stopAndRemoveContainer(c.ID, c.Name, timeout); err != nil {
+				// Error already logged by helper
 			}
-
-			// Remove the container
-			if err := docker.client.ContainerRemove(docker.ctx, c.ID, container.RemoveOptions{}); err != nil {
-				errStr := err.Error()
-				if !strings.Contains(errStr, "already in progress") && !strings.Contains(errStr, "No such container") {
-					slog.Warn("failed to remove container", "name", c.Name, "error", err)
-				}
-			}
-
 			totalContainers++
 		}
 
@@ -360,24 +345,9 @@ func CleanupOrphanedSessions(sessions []OrphanedSession, dryRun bool) (int, erro
 		// Stop and remove each container
 		timeout := 10
 		for _, c := range session.Containers {
-			// Stop the container
-			if err := docker.client.ContainerStop(docker.ctx, c.ID, container.StopOptions{
-				Timeout: &timeout,
-			}); err != nil {
-				errStr := err.Error()
-				if !strings.Contains(errStr, "already in progress") && !strings.Contains(errStr, "No such container") {
-					slog.Warn("failed to stop container", "name", c.Name, "error", err)
-				}
+			if _, err := docker.stopAndRemoveContainer(c.ID, c.Name, timeout); err != nil {
+				// Error already logged by helper
 			}
-
-			// Remove the container
-			if err := docker.client.ContainerRemove(docker.ctx, c.ID, container.RemoveOptions{}); err != nil {
-				errStr := err.Error()
-				if !strings.Contains(errStr, "already in progress") && !strings.Contains(errStr, "No such container") {
-					slog.Warn("failed to remove container", "name", c.Name, "error", err)
-				}
-			}
-
 			totalContainers++
 		}
 
@@ -441,25 +411,10 @@ func StopAll() error {
 			continue
 		}
 
-		// Stop the container
+		// Stop and remove the container
 		timeout := 10
-		if err := docker.client.ContainerStop(docker.ctx, containerID, container.StopOptions{
-			Timeout: &timeout,
-		}); err != nil {
-			// Ignore "already in progress" and "no such container" errors
-			errStr := err.Error()
-			if !strings.Contains(errStr, "already in progress") && !strings.Contains(errStr, "No such container") {
-				slog.Warn("failed to stop container", "name", c.Name, "error", err)
-			}
-		}
-
-		// Remove the container
-		if err := docker.client.ContainerRemove(docker.ctx, containerID, container.RemoveOptions{}); err != nil {
-			// Ignore "already in progress" and "no such container" errors - AutoRemove containers remove themselves
-			errStr := err.Error()
-			if !strings.Contains(errStr, "already in progress") && !strings.Contains(errStr, "No such container") {
-				slog.Warn("failed to remove container", "name", c.Name, "error", err)
-			}
+		if _, err := docker.stopAndRemoveContainer(containerID, c.Name, timeout); err != nil {
+			// Error already logged by helper
 		}
 
 		// Track project networks to remove later
