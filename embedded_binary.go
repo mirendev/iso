@@ -23,16 +23,6 @@ var linuxBinaryArm64Gz []byte
 // extractLinuxBinary extracts the embedded Linux iso binary to the .iso directory
 // and returns the path to that file. Reuses existing file if present and valid.
 func extractLinuxBinary(isoDir, arch string) (string, error) {
-	// If we're already running on Linux with the same architecture as Docker,
-	// just use the current executable instead of extracting
-	if runtime.GOOS == "linux" && runtime.GOARCH == arch {
-		exePath, err := os.Executable()
-		if err != nil {
-			return "", fmt.Errorf("failed to get executable path: %w", err)
-		}
-		return exePath, nil
-	}
-
 	// Determine which compressed binary to use
 	var compressedBinary []byte
 
@@ -43,6 +33,16 @@ func extractLinuxBinary(isoDir, arch string) (string, error) {
 		compressedBinary = linuxBinaryArm64Gz
 	default:
 		return "", fmt.Errorf("unsupported architecture: %s", arch)
+	}
+
+	// If embedded binary is empty/zeroed and we're on Linux with matching arch,
+	// use the current executable instead (optimization for local dev builds)
+	if len(compressedBinary) <= 20 && runtime.GOOS == "linux" && runtime.GOARCH == arch {
+		exePath, err := os.Executable()
+		if err != nil {
+			return "", fmt.Errorf("failed to get executable path: %w", err)
+		}
+		return exePath, nil
 	}
 
 	if len(compressedBinary) == 0 {
