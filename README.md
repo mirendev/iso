@@ -1,6 +1,8 @@
 # iso - Isolated Docker Environment Tool
 
-`iso` is a Go tool that provides an isolated Docker environment for running tests and commands. It manages Docker containers automatically, reusing them when possible for faster execution.
+`iso` is a CLI tool that provides isolated Docker environments for running commands and tests. It manages Docker containers automatically, handling image builds, service dependencies, and container lifecycle.
+
+> **Note**: ISO is an internal tool built by the [Miren](https://miren.dev) team to solve our own development environment needs. We're sharing it publicly to allow others to contribute to the [Miren Runtime](https://github.com/mirendev/runtime) (which uses ISO for development and tests), and in case others find it useful. See [CONTRIBUTING.md](CONTRIBUTING.md) for more context on the project's scope.
 
 ## Features
 
@@ -301,7 +303,4 @@ iso/
 
 ## License
 
-This tool uses:
-- `miren.dev/mflags` for CLI parsing
-- `github.com/docker/docker` for Docker API access
-- `miren.dev/trifle` for logging
+Apache License 2.0 - see [LICENSE](LICENSE) for details.
