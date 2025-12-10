@@ -24,3 +24,6 @@ vendor/
 # ISO runtime files
 startup.log
 result
+
+# direnv cache
+.direnv/
