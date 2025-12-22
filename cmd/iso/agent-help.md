@@ -40,6 +40,12 @@ cache:
   - /go/pkg/mod
   - /root/.cache/go-build
 
+# Host directories to bind mount into the container (optional)
+# Use ~ to reference the current user's home directory
+binds:
+  - "~/.ssh:/root/.ssh:ro"
+  - "/var/run/docker.sock:/var/run/docker.sock"
+
 # Add custom host-to-IP mappings (optional)
 extra_hosts:
   - "myhost:192.168.1.100"
@@ -56,6 +62,8 @@ extra_hosts:
 
 - **cache** (list of strings, optional): List of container paths that should be mounted as shared cache volumes. Cache volumes are **shared across all worktrees** of the same repository and persist until you run `iso prune`. Ideal for package manager caches (Go modules, npm, pip, cargo) that can be safely shared to avoid redundant downloads.
 
+- **binds** (list of strings, optional): List of host directory bind mounts in Docker format `"host_path:container_path[:options]"`. This allows mounting specific host directories into the container. The host path supports `~` expansion to reference the current user's home directory (e.g., `~/.ssh:/root/.ssh`). Common uses include mounting SSH keys, Docker socket, or other host resources. Options can include `ro` for read-only or `rw` for read-write (default).
+
 - **extra_hosts** (list of strings, optional): List of custom host-to-IP mappings to add to the container's `/etc/hosts` file. Each entry should be in the format `"hostname:ip"`. Use `host-gateway` as a special IP to refer to the host's gateway IP. This is particularly useful on Linux for accessing services running on the host machine.
 
 Example:
@@ -68,6 +76,9 @@ cache:
   - /go/pkg/mod               # Shared Go module cache
   - /root/.cache/go-build     # Shared Go build cache
   - /root/.cache/pip          # Shared Python package cache
+binds:
+  - "~/.ssh:/root/.ssh:ro"                       # SSH keys (read-only, ~ expands to home)
+  - "/var/run/docker.sock:/var/run/docker.sock"  # Docker socket
 extra_hosts:
   - "host.docker.internal:host-gateway"  # Access host services on Linux
 ```

@@ -271,6 +271,28 @@ func (cm *containerManager) startContainer() (string, error) {
 		binds = append(binds, fmt.Sprintf("%s:%s", volumeName, cachePath))
 	}
 
+	// Add host directory bind mounts (with ~ expansion)
+	for _, bind := range cm.config.Binds {
+		// Split bind into parts: host:container or host:container:options
+		parts := strings.SplitN(bind, ":", 3)
+		if len(parts) >= 2 {
+			hostPath := parts[0]
+			// Expand ~ to home directory
+			if strings.HasPrefix(hostPath, "~/") {
+				if usr, err := user.Current(); err == nil {
+					hostPath = filepath.Join(usr.HomeDir, hostPath[2:])
+				}
+			} else if hostPath == "~" {
+				if usr, err := user.Current(); err == nil {
+					hostPath = usr.HomeDir
+				}
+			}
+			parts[0] = hostPath
+			bind = strings.Join(parts, ":")
+		}
+		binds = append(binds, bind)
+	}
+
 	// Check if this is an ephemeral session
 	isEphemeral := strings.HasPrefix(cm.session, "eph-")
 

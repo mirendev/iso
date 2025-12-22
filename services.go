@@ -16,6 +16,7 @@ type Config struct {
 	WorkDir     string            `yaml:"workdir"`
 	Volumes     []string          `yaml:"volumes"`
 	Cache       []string          `yaml:"cache"`
+	Binds       []string          `yaml:"binds"`
 	Environment map[string]string `yaml:"environment"`
 	ExtraHosts  []string          `yaml:"extra_hosts"`
 }
