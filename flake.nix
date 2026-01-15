@@ -28,7 +28,7 @@
         embeddedBinary = pkgs.buildGoModule {
           pname = "iso-embedded";
           version = "0.1.0";
-          src = ./.;
+          src = self;
           vendorHash = "sha256-7DURQKtPSqVcIQ+ksAkp/ZgQm/1imCLyXDmq8PqR+PY=";
           subPackages = [ "cmd/iso" ];
           tags = [ "linux_build" ];
@@ -54,7 +54,7 @@
         packages.default = pkgs.buildGoModule {
           pname = "iso";
           version = "0.1.0";
-          src = ./.;
+          src = self;
           vendorHash = "sha256-7DURQKtPSqVcIQ+ksAkp/ZgQm/1imCLyXDmq8PqR+PY=";
           subPackages = [ "cmd/iso" ];
           tags = [ "embed_binaries" ];
