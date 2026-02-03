@@ -79,6 +79,13 @@ func run() error {
 	registerAgentHelpCommand(dispatcher)
 	registerVersionCommand(dispatcher)
 
+	// Peers commands
+	registerPeersUpCommand(dispatcher)
+	registerPeersDownCommand(dispatcher)
+	registerPeersExecCommand(dispatcher)
+	registerPeersShellCommand(dispatcher)
+	registerPeersStatusCommand(dispatcher)
+
 	// Execute the dispatcher
 	return dispatcher.Execute(os.Args[1:])
 }
@@ -892,4 +899,183 @@ func registerVersionCommand(dispatcher *mflags.Dispatcher) {
 	)
 
 	dispatcher.Dispatch("version", cmd)
+}
+
+// registerPeersUpCommand registers the 'peers up' command
+func registerPeersUpCommand(dispatcher *mflags.Dispatcher) {
+	fs := mflags.NewFlagSet("peers up")
+
+	handler := func(fs *mflags.FlagSet, args []string) error {
+		// Peers use a fixed "peers" session internally
+		client, err := iso.New("peers")
+		if err != nil {
+			return err
+		}
+		defer client.Close()
+
+		return client.PeersUp(args)
+	}
+
+	cmd := mflags.NewCommand(fs, handler,
+		mflags.WithUsage("Start all or specific peer containers"),
+	)
+
+	dispatcher.Dispatch("peers up", cmd)
+}
+
+// registerPeersDownCommand registers the 'peers down' command
+func registerPeersDownCommand(dispatcher *mflags.Dispatcher) {
+	fs := mflags.NewFlagSet("peers down")
+
+	handler := func(fs *mflags.FlagSet, args []string) error {
+		client, err := iso.New("peers")
+		if err != nil {
+			return err
+		}
+		defer client.Close()
+
+		return client.PeersDown()
+	}
+
+	cmd := mflags.NewCommand(fs, handler,
+		mflags.WithUsage("Stop and remove all peer containers"),
+	)
+
+	dispatcher.Dispatch("peers down", cmd)
+}
+
+// registerPeersExecCommand registers the 'peers exec' command
+func registerPeersExecCommand(dispatcher *mflags.Dispatcher) {
+	fs := mflags.NewFlagSet("peers exec")
+
+	all := fs.Bool("all", 'a', false, "Execute command on all peers")
+
+	// Allow unknown flags to pass through to the command
+	fs.AllowUnknownFlags(true)
+
+	handler := func(fs *mflags.FlagSet, args []string) error {
+		client, err := iso.New("peers")
+		if err != nil {
+			return err
+		}
+		defer client.Close()
+
+		// Combine args and unknown flags
+		fullArgs := append(args, fs.UnknownFlags()...)
+
+		if *all {
+			// Execute on all peers - command comes after --all
+			if len(fullArgs) == 0 {
+				return fmt.Errorf("no command specified")
+			}
+			return client.PeersExecAll(fullArgs, nil)
+		}
+
+		// Single peer execution: peers exec <peer> -- <command>
+		if len(fullArgs) < 2 {
+			return fmt.Errorf("usage: iso peers exec <peer> -- <command>")
+		}
+
+		peerName := fullArgs[0]
+		command := fullArgs[1:]
+
+		exitCode, err := client.PeersExec(peerName, command, nil)
+		if err != nil {
+			return err
+		}
+		if exitCode != 0 {
+			return &ExitError{Code: exitCode}
+		}
+		return nil
+	}
+
+	cmd := mflags.NewCommand(fs, handler,
+		mflags.WithUsage("Execute a command in a peer container"),
+	)
+
+	dispatcher.Dispatch("peers exec", cmd)
+}
+
+// registerPeersShellCommand registers the 'peers shell' command
+func registerPeersShellCommand(dispatcher *mflags.Dispatcher) {
+	fs := mflags.NewFlagSet("peers shell")
+
+	handler := func(fs *mflags.FlagSet, args []string) error {
+		if len(args) != 1 {
+			return fmt.Errorf("usage: iso peers shell <peer>")
+		}
+
+		peerName := args[0]
+
+		client, err := iso.New("peers")
+		if err != nil {
+			return err
+		}
+		defer client.Close()
+
+		exitCode, err := client.PeersShell(peerName)
+		if err != nil {
+			return err
+		}
+		if exitCode != 0 {
+			return &ExitError{Code: exitCode}
+		}
+		return nil
+	}
+
+	cmd := mflags.NewCommand(fs, handler,
+		mflags.WithUsage("Open an interactive shell in a peer container"),
+	)
+
+	dispatcher.Dispatch("peers shell", cmd)
+}
+
+// registerPeersStatusCommand registers the 'peers status' command
+func registerPeersStatusCommand(dispatcher *mflags.Dispatcher) {
+	fs := mflags.NewFlagSet("peers status")
+
+	handler := func(fs *mflags.FlagSet, args []string) error {
+		client, err := iso.New("peers")
+		if err != nil {
+			return err
+		}
+		defer client.Close()
+
+		if !client.HasPeers() {
+			fmt.Println("No peers configured - create .iso/peers.yml first")
+			return nil
+		}
+
+		statuses, err := client.PeersStatus()
+		if err != nil {
+			return err
+		}
+
+		if len(statuses) == 0 {
+			fmt.Println("No peers defined")
+			return nil
+		}
+
+		fmt.Printf("%-15s %-20s %-12s %s\n", "PEER", "HOSTNAME", "CONTAINER", "STATE")
+		for _, status := range statuses {
+			containerID := status.ContainerID
+			if containerID == "" {
+				containerID = "-"
+			}
+			fmt.Printf("%-15s %-20s %-12s %s\n",
+				status.Name,
+				status.Hostname,
+				containerID,
+				status.State,
+			)
+		}
+
+		return nil
+	}
+
+	cmd := mflags.NewCommand(fs, handler,
+		mflags.WithUsage("Show peer container status"),
+	)
+
+	dispatcher.Dispatch("peers status", cmd)
 }

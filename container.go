@@ -16,6 +16,7 @@ import (
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/pkg/stdcopy"
+	"github.com/docker/go-connections/nat"
 	"github.com/moby/term"
 )
 
@@ -32,6 +33,8 @@ type containerManager struct {
 	session             string // Session name (default is "default")
 	networkName         string
 	services            map[string]ServiceConfig
+	peers               *PeersFile // Peer container configuration
+	peersNetworkName    string     // Network name for peers
 	isoDir              string
 	tempIsoPath         string // Path to extracted Linux iso binary
 	config              *Config
@@ -63,6 +66,12 @@ func newContainerManager(session string) (*containerManager, error) {
 
 	// Load services if they exist
 	services, err := loadServicesFile(isoDir)
+	if err != nil {
+		return nil, err
+	}
+
+	// Load peers if they exist
+	peers, err := loadPeersFile(isoDir)
 	if err != nil {
 		return nil, err
 	}
@@ -104,6 +113,16 @@ func newContainerManager(session string) (*containerManager, error) {
 		return nil, fmt.Errorf("failed to extract Linux binary: %w", err)
 	}
 
+	// Determine peers network name
+	var peersNetworkName string
+	if peers != nil {
+		if peers.Network != "" {
+			peersNetworkName = peers.Network
+		} else {
+			peersNetworkName = fmt.Sprintf("%s-iso-peers", worktreeProjectName)
+		}
+	}
+
 	cm := &containerManager{
 		docker:              docker,
 		imageName:           imageName,
@@ -116,6 +135,8 @@ func newContainerManager(session string) (*containerManager, error) {
 		session:             session,
 		networkName:         networkName,
 		services:            services,
+		peers:               peers,
+		peersNetworkName:    peersNetworkName,
 		isoDir:              isoDir,
 		tempIsoPath:         isoPath,
 		config:              config,
@@ -1244,4 +1265,601 @@ func (cm *containerManager) cleanupStaleResources() {
 			}
 		}
 	}
+}
+
+// getPeerContainerName returns the container name for a peer
+func (cm *containerManager) getPeerContainerName(peerName string) string {
+	return fmt.Sprintf("%s-iso-peer-%s", cm.worktreeProjectName, peerName)
+}
+
+// ensurePeersNetwork creates the peers network if it doesn't exist
+func (cm *containerManager) ensurePeersNetwork() error {
+	if cm.peers == nil {
+		return fmt.Errorf("no peers configured")
+	}
+
+	exists, err := cm.docker.networkExists(cm.peersNetworkName)
+	if err != nil {
+		return err
+	}
+
+	if !exists {
+		_, err = cm.docker.createNetwork(cm.peersNetworkName)
+		if err != nil {
+			return err
+		}
+		slog.Debug("created peers network", "network", cm.peersNetworkName)
+	}
+
+	return nil
+}
+
+// startPeer starts a single peer container
+func (cm *containerManager) startPeer(peerName string, config PeerConfig) (string, error) {
+	containerName := cm.getPeerContainerName(peerName)
+
+	// Check if peer container already exists and is running
+	running, err := cm.docker.isContainerRunning(containerName)
+	if err != nil {
+		return "", err
+	}
+
+	if running {
+		containerID, err := cm.docker.getContainerID(containerName)
+		if err != nil {
+			return "", err
+		}
+		return containerID, nil
+	}
+
+	// Check if container exists but is stopped
+	exists, err := cm.docker.containerExists(containerName)
+	if err != nil {
+		return "", err
+	}
+
+	if exists {
+		// Start existing container
+		containerID, err := cm.docker.getContainerID(containerName)
+		if err != nil {
+			return "", err
+		}
+		if err := cm.docker.client.ContainerStart(cm.docker.ctx, containerID, container.StartOptions{}); err != nil {
+			return "", fmt.Errorf("failed to start peer container: %w", err)
+		}
+		return containerID, nil
+	}
+
+	// Determine the mount path (same as main container)
+	var mountPath string
+	if cm.isoDir != "" {
+		mountPath = filepath.Dir(cm.isoDir)
+	} else {
+		dockerfileDir := filepath.Dir(cm.dockerfilePath)
+		var err error
+		mountPath, err = filepath.Abs(dockerfileDir)
+		if err != nil {
+			return "", fmt.Errorf("failed to get absolute path: %w", err)
+		}
+	}
+
+	// Ensure volumes exist
+	if err := cm.ensureVolumes(); err != nil {
+		return "", err
+	}
+
+	// Build bind mounts list (same as main container)
+	binds := []string{
+		fmt.Sprintf("%s:%s", mountPath, cm.config.WorkDir),
+		fmt.Sprintf("%s:/iso:ro", cm.tempIsoPath),
+	}
+
+	// Add session-specific volume mounts
+	for _, volumePath := range cm.config.Volumes {
+		volumeName := cm.getVolumeNameForPath(volumePath)
+		binds = append(binds, fmt.Sprintf("%s:%s", volumeName, volumePath))
+	}
+
+	// Add shared cache volume mounts
+	for _, cachePath := range cm.config.Cache {
+		volumeName := cm.getCacheVolumeNameForPath(cachePath)
+		binds = append(binds, fmt.Sprintf("%s:%s", volumeName, cachePath))
+	}
+
+	// Add host directory bind mounts (with ~ expansion)
+	for _, bind := range cm.config.Binds {
+		parts := strings.SplitN(bind, ":", 3)
+		if len(parts) >= 2 {
+			hostPath := parts[0]
+			if strings.HasPrefix(hostPath, "~/") {
+				if usr, err := user.Current(); err == nil {
+					hostPath = filepath.Join(usr.HomeDir, hostPath[2:])
+				}
+			} else if hostPath == "~" {
+				if usr, err := user.Current(); err == nil {
+					hostPath = usr.HomeDir
+				}
+			}
+			parts[0] = hostPath
+			bind = strings.Join(parts, ":")
+		}
+		binds = append(binds, bind)
+	}
+
+	// Convert environment map to slice
+	env := []string{
+		fmt.Sprintf("ISO_WORKDIR=%s", cm.config.WorkDir),
+		fmt.Sprintf("ISO_SESSION=peers"),
+		fmt.Sprintf("ISO_PEER_NAME=%s", peerName),
+		fmt.Sprintf("ISO_PEER_HOSTNAME=%s", config.Hostname),
+	}
+	for key, value := range config.Environment {
+		env = append(env, fmt.Sprintf("%s=%s", key, value))
+	}
+
+	// Create container config
+	containerConfig := &container.Config{
+		Image:      cm.imageName,
+		WorkingDir: cm.config.WorkDir,
+		Cmd:        []string{"/iso", "_internal-init"},
+		Env:        env,
+		Hostname:   config.Hostname,
+		Labels: map[string]string{
+			"iso.managed":      "true",
+			"iso.project.name": cm.projectName,
+			"iso.project.dir":  cm.projectRoot,
+			"iso.session":      "peers",
+			"iso.name":         peerName,
+			"iso.peer":         "true",
+			"iso.peer.name":    peerName,
+		},
+	}
+
+	// Parse port mappings
+	exposedPorts := nat.PortSet{}
+	portBindings := nat.PortMap{}
+
+	for _, portSpec := range config.Ports {
+		// Format: "hostPort:containerPort" or just "containerPort"
+		parts := strings.Split(portSpec, ":")
+		var hostPort, containerPort string
+		if len(parts) == 2 {
+			hostPort = parts[0]
+			containerPort = parts[1]
+		} else {
+			hostPort = parts[0]
+			containerPort = parts[0]
+		}
+
+		port, err := nat.NewPort("tcp", containerPort)
+		if err != nil {
+			return "", fmt.Errorf("invalid port %s: %w", containerPort, err)
+		}
+
+		exposedPorts[port] = struct{}{}
+		portBindings[port] = append(portBindings[port], nat.PortBinding{
+			HostIP:   "0.0.0.0",
+			HostPort: hostPort,
+		})
+	}
+
+	if len(exposedPorts) > 0 {
+		containerConfig.ExposedPorts = exposedPorts
+	}
+
+	hostConfig := &container.HostConfig{
+		Binds:      binds,
+		Privileged: cm.config.Privileged,
+		ExtraHosts: cm.config.ExtraHosts,
+	}
+
+	if len(portBindings) > 0 {
+		hostConfig.PortBindings = portBindings
+	}
+
+	networkConfig := &network.NetworkingConfig{
+		EndpointsConfig: map[string]*network.EndpointSettings{
+			cm.peersNetworkName: {
+				Aliases: []string{config.Hostname},
+			},
+		},
+	}
+
+	// Create the peer container
+	resp, err := cm.docker.client.ContainerCreate(
+		cm.docker.ctx,
+		containerConfig,
+		hostConfig,
+		networkConfig,
+		nil,
+		containerName,
+	)
+	if err != nil {
+		return "", fmt.Errorf("failed to create peer container %s: %w", peerName, err)
+	}
+
+	// Start the peer container
+	if err := cm.docker.client.ContainerStart(cm.docker.ctx, resp.ID, container.StartOptions{}); err != nil {
+		return "", fmt.Errorf("failed to start peer container %s: %w", peerName, err)
+	}
+
+	return resp.ID, nil
+}
+
+// startAllPeers starts all or specific peer containers
+func (cm *containerManager) startAllPeers(peerNames []string) error {
+	if cm.peers == nil {
+		return fmt.Errorf("no peers configured - create .iso/peers.yml first")
+	}
+
+	// Ensure image exists
+	if err := cm.ensureImage(); err != nil {
+		return err
+	}
+
+	// Ensure peers network exists
+	if err := cm.ensurePeersNetwork(); err != nil {
+		return err
+	}
+
+	// Also start services and connect them to peers network
+	if len(cm.services) > 0 {
+		// Ensure the regular network exists for services
+		if err := cm.ensureNetwork(); err != nil {
+			return err
+		}
+		if err := cm.startAllServices(true); err != nil {
+			return err
+		}
+		// Connect services to peers network
+		for serviceName := range cm.services {
+			serviceContainerName := cm.getServiceContainerName(serviceName)
+			containerID, err := cm.docker.getContainerID(serviceContainerName)
+			if err != nil {
+				slog.Warn("failed to get service container ID", "service", serviceName, "error", err)
+				continue
+			}
+			// Try to connect to peers network (may already be connected)
+			if err := cm.docker.client.NetworkConnect(cm.docker.ctx, cm.peersNetworkName, containerID, &network.EndpointSettings{
+				Aliases: []string{serviceName},
+			}); err != nil {
+				// Ignore "already exists" errors
+				if !strings.Contains(err.Error(), "already exists") {
+					slog.Warn("failed to connect service to peers network", "service", serviceName, "error", err)
+				}
+			}
+		}
+	}
+
+	// Determine which peers to start
+	peersToStart := make(map[string]PeerConfig)
+	if len(peerNames) == 0 {
+		// Start all peers
+		peersToStart = cm.peers.Peers
+	} else {
+		// Start specific peers
+		for _, name := range peerNames {
+			if config, ok := cm.peers.Peers[name]; ok {
+				peersToStart[name] = config
+			} else {
+				return fmt.Errorf("unknown peer: %s", name)
+			}
+		}
+	}
+
+	// Start each peer
+	for peerName, config := range peersToStart {
+		slog.Info("starting peer", "peer", peerName, "hostname", config.Hostname)
+		containerID, err := cm.startPeer(peerName, config)
+		if err != nil {
+			return err
+		}
+		slog.Debug("peer started", "peer", peerName, "container_id", containerID[:12])
+	}
+
+	return nil
+}
+
+// stopAllPeers stops and removes all peer containers
+func (cm *containerManager) stopAllPeers() error {
+	if cm.peers == nil {
+		return nil
+	}
+
+	// Get all peer containers for this project
+	peerContainers, err := cm.docker.listPeerContainers(cm.projectName)
+	if err != nil {
+		return err
+	}
+
+	if len(peerContainers) == 0 {
+		slog.Info("no peer containers to stop")
+		return nil
+	}
+
+	// Stop and remove all peer containers
+	timeout := 10
+	for _, c := range peerContainers {
+		slog.Debug("stopping peer container", "name", c.Name)
+		if _, err := cm.docker.stopAndRemoveContainer(c.ID, c.Name, timeout); err != nil {
+			slog.Warn("failed to stop peer container", "name", c.Name, "error", err)
+		}
+	}
+
+	// Also stop services
+	if len(cm.services) > 0 {
+		if err := cm.stopAllServices(); err != nil {
+			slog.Warn("failed to stop services", "error", err)
+		}
+	}
+
+	// Remove the peers network
+	if err := cm.docker.removeNetwork(cm.peersNetworkName); err != nil {
+		if !strings.Contains(err.Error(), "not found") {
+			slog.Warn("failed to remove peers network", "network", cm.peersNetworkName, "error", err)
+		}
+	}
+
+	return nil
+}
+
+// execInPeer executes a command in a peer container
+func (cm *containerManager) execInPeer(peerName string, command []string, envVars []string) (int, error) {
+	if cm.peers == nil {
+		return 0, fmt.Errorf("no peers configured")
+	}
+
+	if _, ok := cm.peers.Peers[peerName]; !ok {
+		return 0, fmt.Errorf("unknown peer: %s", peerName)
+	}
+
+	containerName := cm.getPeerContainerName(peerName)
+
+	// Check if container is running
+	running, err := cm.docker.isContainerRunning(containerName)
+	if err != nil {
+		return 0, err
+	}
+	if !running {
+		return 0, fmt.Errorf("peer %s is not running - use 'iso peers up' first", peerName)
+	}
+
+	containerID, err := cm.docker.getContainerID(containerName)
+	if err != nil {
+		return 0, err
+	}
+
+	// Calculate working directory
+	workDir := cm.config.WorkDir
+	cwd, err := os.Getwd()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get current directory: %w", err)
+	}
+
+	var mountRoot string
+	if cm.isoDir != "" {
+		mountRoot = filepath.Dir(cm.isoDir)
+	} else {
+		dockerfileDir := filepath.Dir(cm.dockerfilePath)
+		mountRoot, err = filepath.Abs(dockerfileDir)
+		if err != nil {
+			return 0, fmt.Errorf("failed to get absolute path: %w", err)
+		}
+	}
+
+	relPath, err := filepath.Rel(mountRoot, cwd)
+	if err != nil {
+		return 0, fmt.Errorf("failed to calculate relative path: %w", err)
+	}
+
+	if relPath != "." && !filepath.IsAbs(relPath) && relPath != ".." && !strings.HasPrefix(relPath, "..") {
+		workDir = filepath.Join(cm.config.WorkDir, relPath)
+	}
+
+	// Check if stdin is a TTY
+	isTTY := term.IsTerminal(os.Stdin.Fd())
+
+	// If TTY mode, set terminal to raw mode
+	var oldState *term.State
+	if isTTY {
+		oldState, err = term.SaveState(os.Stdin.Fd())
+		if err != nil {
+			return 0, fmt.Errorf("failed to save terminal state: %w", err)
+		}
+		defer func() {
+			if oldState != nil {
+				_ = term.RestoreTerminal(os.Stdin.Fd(), oldState)
+			}
+		}()
+
+		if _, err := term.MakeRaw(os.Stdin.Fd()); err != nil {
+			return 0, fmt.Errorf("failed to set terminal to raw mode: %w", err)
+		}
+	}
+
+	// Wrap command with in-env run for pre/post hooks
+	wrappedCommand := append([]string{"/iso", "in-env", "run", "--"}, command...)
+
+	// Get host user's UID and GID
+	currentUser, err := user.Current()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get current user: %w", err)
+	}
+
+	// Build exec environment
+	execEnv := []string{
+		fmt.Sprintf("ISO_WORKDIR=%s", cm.config.WorkDir),
+		fmt.Sprintf("ISO_SESSION=peers"),
+		fmt.Sprintf("ISO_UID=%s", currentUser.Uid),
+		fmt.Sprintf("ISO_GID=%s", currentUser.Gid),
+		fmt.Sprintf("ISO_PEER_NAME=%s", peerName),
+	}
+
+	if isTTY {
+		if termValue := os.Getenv("TERM"); termValue != "" {
+			if termValue == "xterm-ghostty" {
+				termValue = "xterm-256color"
+			}
+			execEnv = append(execEnv, fmt.Sprintf("TERM=%s", termValue))
+		}
+	}
+
+	// Add environment from config
+	for key, value := range cm.config.Environment {
+		execEnv = append(execEnv, fmt.Sprintf("%s=%s", key, value))
+	}
+
+	// Add command-line environment variables
+	execEnv = append(execEnv, envVars...)
+
+	// Execute the command
+	execConfig := container.ExecOptions{
+		Cmd:          wrappedCommand,
+		AttachStdout: true,
+		AttachStderr: true,
+		AttachStdin:  true,
+		Tty:          isTTY,
+		WorkingDir:   workDir,
+		Env:          execEnv,
+	}
+
+	execResp, err := cm.docker.client.ContainerExecCreate(cm.docker.ctx, containerID, execConfig)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create exec: %w", err)
+	}
+
+	// Attach to the exec instance
+	attachResp, err := cm.docker.client.ContainerExecAttach(cm.docker.ctx, execResp.ID, container.ExecStartOptions{
+		Tty: isTTY,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("failed to attach to exec: %w", err)
+	}
+	defer attachResp.Close()
+
+	// If TTY mode, set terminal size and monitor for resize events
+	if isTTY {
+		winsize, err := term.GetWinsize(os.Stdin.Fd())
+		if err == nil {
+			if err := cm.docker.client.ContainerExecResize(cm.docker.ctx, execResp.ID, container.ResizeOptions{
+				Height: uint(winsize.Height),
+				Width:  uint(winsize.Width),
+			}); err != nil {
+				slog.Warn("failed to set initial terminal size", "error", err)
+			}
+		}
+
+		go func() {
+			sigChan := make(chan os.Signal, 1)
+			signal.Notify(sigChan, syscall.SIGWINCH)
+			defer signal.Stop(sigChan)
+
+			for {
+				select {
+				case <-sigChan:
+					if ws, err := term.GetWinsize(os.Stdin.Fd()); err == nil {
+						_ = cm.docker.client.ContainerExecResize(cm.docker.ctx, execResp.ID, container.ResizeOptions{
+							Height: uint(ws.Height),
+							Width:  uint(ws.Width),
+						})
+					}
+				case <-cm.docker.ctx.Done():
+					return
+				}
+			}
+		}()
+	}
+
+	// Copy stdin in background
+	go func() {
+		_, _ = io.Copy(attachResp.Conn, os.Stdin)
+		if closer, ok := attachResp.Conn.(interface{ CloseWrite() error }); ok {
+			closer.CloseWrite()
+		}
+	}()
+
+	// Copy stdout/stderr
+	outputDone := make(chan error, 1)
+	go func() {
+		var err error
+		if isTTY {
+			_, err = io.Copy(os.Stdout, attachResp.Conn)
+		} else {
+			_, err = stdcopy.StdCopy(os.Stdout, os.Stderr, attachResp.Reader)
+		}
+		outputDone <- err
+	}()
+
+	// Wait for output to finish
+	select {
+	case err := <-outputDone:
+		if err != nil && err != io.EOF {
+			return 0, fmt.Errorf("failed to read output: %w", err)
+		}
+	case <-cm.docker.ctx.Done():
+		return 0, cm.docker.ctx.Err()
+	}
+
+	// Check exit code
+	inspectResp, err := cm.docker.client.ContainerExecInspect(cm.docker.ctx, execResp.ID)
+	if err != nil {
+		return 0, fmt.Errorf("failed to inspect exec: %w", err)
+	}
+
+	return inspectResp.ExitCode, nil
+}
+
+// PeerStatus represents the status of a peer container
+type PeerStatus struct {
+	Name        string
+	Hostname    string
+	ContainerID string
+	State       string // "running", "stopped", "not created"
+}
+
+// getPeersStatus returns the status of all peer containers
+func (cm *containerManager) getPeersStatus() ([]PeerStatus, error) {
+	if cm.peers == nil {
+		return nil, fmt.Errorf("no peers configured")
+	}
+
+	var statuses []PeerStatus
+
+	for peerName, config := range cm.peers.Peers {
+		containerName := cm.getPeerContainerName(peerName)
+
+		status := PeerStatus{
+			Name:     peerName,
+			Hostname: config.Hostname,
+			State:    "not created",
+		}
+
+		exists, err := cm.docker.containerExists(containerName)
+		if err != nil {
+			return nil, err
+		}
+
+		if exists {
+			containerID, err := cm.docker.getContainerID(containerName)
+			if err != nil {
+				return nil, err
+			}
+			status.ContainerID = containerID[:12]
+
+			running, err := cm.docker.isContainerRunning(containerName)
+			if err != nil {
+				return nil, err
+			}
+
+			if running {
+				status.State = "running"
+			} else {
+				status.State = "stopped"
+			}
+		}
+
+		statuses = append(statuses, status)
+	}
+
+	return statuses, nil
 }
