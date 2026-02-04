@@ -1,0 +1,14 @@
+network: test-peers
+
+peers:
+  coordinator:
+    hostname: coordinator
+    environment:
+      ROLE: coordinator
+    ports:
+      - "8443:8443"
+
+  runner1:
+    hostname: runner1
+    environment:
+      ROLE: runner

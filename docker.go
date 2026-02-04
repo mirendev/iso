@@ -582,6 +582,45 @@ func (d *dockerClient) listDanglingVolumes() ([]string, error) {
 	return volumeNames, nil
 }
 
+// listPeerContainers lists all ISO-managed peer containers for a specific project
+func (d *dockerClient) listPeerContainers(projectName string) ([]isoContainerInfo, error) {
+	containers, err := d.client.ContainerList(d.ctx, container.ListOptions{
+		All: true,
+		Filters: filters.NewArgs(
+			filters.Arg("label", "iso.managed=true"),
+			filters.Arg("label", fmt.Sprintf("iso.project.name=%s", projectName)),
+			filters.Arg("label", "iso.peer=true"),
+		),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list peer containers: %w", err)
+	}
+
+	var peerContainers []isoContainerInfo
+	for _, c := range containers {
+		name := ""
+		if len(c.Names) > 0 {
+			// Docker prefixes names with '/'
+			name = strings.TrimPrefix(c.Names[0], "/")
+		}
+
+		peerContainers = append(peerContainers, isoContainerInfo{
+			ID:          c.ID,
+			Name:        name,
+			ShortName:   c.Labels["iso.name"],
+			ProjectName: c.Labels["iso.project.name"],
+			ProjectDir:  c.Labels["iso.project.dir"],
+			Session:     c.Labels["iso.session"],
+			Status:      c.Status,
+			Fresh:       c.Labels["iso.fresh"] == "true",
+			IsService:   false,
+			ServiceName: "",
+		})
+	}
+
+	return peerContainers, nil
+}
+
 // listUnusedNetworks finds networks with no connected containers
 func (d *dockerClient) listUnusedNetworks() ([]string, error) {
 	networks, err := d.client.NetworkList(d.ctx, network.ListOptions{})

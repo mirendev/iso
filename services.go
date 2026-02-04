@@ -35,6 +35,19 @@ type ServicesFile struct {
 	Services map[string]ServiceConfig `yaml:"services"`
 }
 
+// PeerConfig defines configuration for a single peer container
+type PeerConfig struct {
+	Hostname    string            `yaml:"hostname"`
+	Environment map[string]string `yaml:"environment,omitempty"`
+	Ports       []string          `yaml:"ports,omitempty"`
+}
+
+// PeersFile represents the structure of peers.yml
+type PeersFile struct {
+	Network string                `yaml:"network"`
+	Peers   map[string]PeerConfig `yaml:"peers"`
+}
+
 // loadConfigFile loads and parses the .iso/config.yml file
 // Returns default config if the file doesn't exist (config is optional)
 func loadConfigFile(isoDir string) (*Config, error) {
@@ -102,6 +115,43 @@ func loadServicesFile(isoDir string) (map[string]ServiceConfig, error) {
 	}
 
 	return servicesFile.Services, nil
+}
+
+// loadPeersFile loads and parses the .iso/peers.yml file
+// Returns nil if the file doesn't exist (peers are optional)
+func loadPeersFile(isoDir string) (*PeersFile, error) {
+	peersPath := filepath.Join(isoDir, "peers.yml")
+
+	// Check if file exists
+	if _, err := os.Stat(peersPath); os.IsNotExist(err) {
+		// No peers file is OK - return nil
+		return nil, nil
+	}
+
+	// Read the file
+	data, err := os.ReadFile(peersPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read peers file: %w", err)
+	}
+
+	// Parse YAML
+	var peersFile PeersFile
+	if err := yaml.Unmarshal(data, &peersFile); err != nil {
+		return nil, fmt.Errorf("failed to parse peers file: %w", err)
+	}
+
+	// Validate peers
+	if len(peersFile.Peers) == 0 {
+		return nil, fmt.Errorf("peers.yml must define at least one peer")
+	}
+
+	for name, config := range peersFile.Peers {
+		if config.Hostname == "" {
+			return nil, fmt.Errorf("peer %q is missing required 'hostname' field", name)
+		}
+	}
+
+	return &peersFile, nil
 }
 
 // findIsoDir searches upward from the current directory to find .iso directory

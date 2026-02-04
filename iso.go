@@ -658,3 +658,54 @@ func parseInitResponse(response string) (dockerfile, services string, err error)
 
 	return dockerfile, services, nil
 }
+
+// PeersUp starts all or specific peer containers
+// If peerNames is empty, starts all peers
+func (c *Client) PeersUp(peerNames []string) error {
+	return c.containerManager.startAllPeers(peerNames)
+}
+
+// PeersDown stops and removes all peer containers
+func (c *Client) PeersDown() error {
+	return c.containerManager.stopAllPeers()
+}
+
+// PeersExec executes a command in a specific peer container
+func (c *Client) PeersExec(peerName string, command []string, envVars []string) (int, error) {
+	return c.containerManager.execInPeer(peerName, command, envVars)
+}
+
+// PeersExecAll executes a command in all peer containers
+func (c *Client) PeersExecAll(command []string, envVars []string) error {
+	if c.containerManager.peers == nil {
+		return fmt.Errorf("no peers configured")
+	}
+
+	for peerName := range c.containerManager.peers.Peers {
+		slog.Info("executing on peer", "peer", peerName)
+		exitCode, err := c.containerManager.execInPeer(peerName, command, envVars)
+		if err != nil {
+			return fmt.Errorf("failed to execute on peer %s: %w", peerName, err)
+		}
+		if exitCode != 0 {
+			return fmt.Errorf("command exited with code %d on peer %s", exitCode, peerName)
+		}
+	}
+
+	return nil
+}
+
+// PeersShell opens an interactive shell in a peer container
+func (c *Client) PeersShell(peerName string) (int, error) {
+	return c.containerManager.execInPeer(peerName, []string{"/bin/bash"}, nil)
+}
+
+// PeersStatus returns the status of all peer containers
+func (c *Client) PeersStatus() ([]PeerStatus, error) {
+	return c.containerManager.getPeersStatus()
+}
+
+// HasPeers returns true if peers are configured
+func (c *Client) HasPeers() bool {
+	return c.containerManager.peers != nil
+}

@@ -12,6 +12,7 @@ project-root/
 │   ├── Dockerfile          # Required: Defines the container environment
 │   ├── config.yml          # Optional: Configuration options
 │   ├── services.yml        # Optional: Defines service containers
+│   ├── peers.yml           # Optional: Defines peer containers for multi-container workflows
 │   ├── pre-run.sh          # Optional: Runs before every command
 │   └── post-run.sh         # Optional: Runs after every command
 ├── your-project-files/
@@ -144,6 +145,61 @@ services:
 
 **Extra Hosts**: Services can specify `extra_hosts` to add custom host-to-IP mappings, allowing service containers to access external hosts or services running on the Docker host.
 
+### .iso/peers.yml
+
+Optional file defining peer containers for multi-container workflows. Peers are multiple containers built from the same Dockerfile that can communicate over a shared network. This is useful for testing distributed systems, multi-node architectures, or scenarios requiring multiple instances of your application.
+
+Format:
+```yaml
+network: my-test-network           # Optional: Custom network name (default: <project>-iso-peers)
+
+peers:
+  coordinator:
+    hostname: coordinator          # Required: Hostname for DNS resolution
+    environment:                   # Optional: Environment variables
+      ROLE: coordinator
+      NODE_ID: "1"
+    ports:                         # Optional: Host port mappings
+      - "8443:8443"
+
+  runner1:
+    hostname: runner1
+    environment:
+      ROLE: runner
+      NODE_ID: "2"
+
+  runner2:
+    hostname: runner2
+    environment:
+      ROLE: runner
+      NODE_ID: "3"
+```
+
+**Peer Options**:
+
+- **network** (string, optional): Custom network name for peer communication. Defaults to `<project>-iso-peers`. All peers and services are connected to this network.
+
+- **hostname** (string, required): The DNS hostname for this peer. Other peers can reach this container using this hostname.
+
+- **environment** (map, optional): Environment variables to set in the peer container. Useful for configuring roles, node IDs, or other peer-specific settings.
+
+- **ports** (list, optional): Host-to-container port mappings in the format `"hostPort:containerPort"`. Use this to expose specific peers to the host machine.
+
+**Peer Features**:
+- All peers share the same Docker image (built from your Dockerfile)
+- Peers share the same bind mounts, volumes, and cache as the main container
+- Services defined in `services.yml` are automatically connected to the peers network
+- Peers can communicate with each other and services using DNS hostnames
+
+**Peer Naming**:
+- Peer containers: `<project>-iso-peer-<name>`
+- Peers network: Value from `network` field, or `<project>-iso-peers` by default
+
+**Environment Variables in Peers**:
+In addition to standard ISO environment variables, peer containers receive:
+- **ISO_PEER_NAME**: The peer's name (e.g., "coordinator", "runner1")
+- **ISO_PEER_HOSTNAME**: The peer's hostname
+
 ### .iso/pre-run.sh and .iso/post-run.sh
 
 Optional shell scripts that run automatically before and after every `iso run` command:
@@ -207,12 +263,16 @@ All resources are automatically named based on your project directory:
 - **Main container**: `<project>-shell`
 - **Service containers**: `<project>-<service-name>`
 - **Network**: `<project>-network`
+- **Peer containers**: `<project>-iso-peer-<name>`
+- **Peers network**: `<project>-iso-peers` (or custom name from peers.yml)
 
 Example: If your project is in `/home/user/myapp`:
 - Image: `myapp-shell`
 - Container: `myapp-shell`
 - MySQL service: `myapp-mysql`
 - Network: `myapp-network`
+- Coordinator peer: `myapp-iso-peer-coordinator`
+- Peers network: `myapp-iso-peers`
 
 ## Commands
 
@@ -318,6 +378,61 @@ Initialize a new `.iso` directory with AI-generated Dockerfile and services.yml 
 
 Internal command used to run commands inside containers with pre/post hook support. You shouldn't need to call this directly.
 
+## Peers Commands
+
+The peers commands enable multi-container workflows for testing distributed systems.
+
+### iso peers up [peer-names...]
+
+Start all peer containers, or specific peers if names are provided. Also starts any services defined in `services.yml` and connects them to the peers network.
+
+```bash
+iso peers up                    # Start all peers
+iso peers up coordinator        # Start only the coordinator peer
+iso peers up runner1 runner2    # Start specific peers
+```
+
+### iso peers down
+
+Stop and remove all peer containers, services, and the peers network.
+
+```bash
+iso peers down
+```
+
+### iso peers exec [--all] <peer> -- <command>
+
+Execute a command in a peer container. Use `--all` to run on all peers sequentially.
+
+```bash
+iso peers exec coordinator -- hostname           # Run on single peer
+iso peers exec coordinator -- ./start-server     # Start server on coordinator
+iso peers exec --all -- echo "hello"             # Run on all peers
+iso peers exec runner1 -- ps aux                 # Check processes on runner1
+```
+
+### iso peers shell <peer>
+
+Open an interactive shell (bash) in a peer container.
+
+```bash
+iso peers shell coordinator     # Shell into coordinator
+iso peers shell runner1         # Shell into runner1
+```
+
+### iso peers status
+
+Show the status of all peer containers.
+
+```bash
+iso peers status
+# Output:
+# PEER            HOSTNAME             CONTAINER    STATE
+# coordinator     coordinator          a1b2c3d4e5f6 running
+# runner1         runner1              -            not created
+# runner2         runner2              b2c3d4e5f6g7 stopped
+```
+
 ## Service Communication
 
 Services are accessible by their name via Docker's DNS:
@@ -410,6 +525,54 @@ ISO_SESSION=dev iso reset
 ISO_SESSION=dev iso run <your-command>
 ```
 
+### Working with Peers (Distributed Testing)
+
+```bash
+# Start all peers and services
+iso peers up
+
+# Check peer status
+iso peers status
+
+# Run commands on specific peers
+iso peers exec coordinator -- ./start-coordinator
+iso peers exec runner1 -- ./start-runner --coordinator=coordinator:8443
+
+# Run a command on all peers
+iso peers exec --all -- echo "Hello from all nodes"
+
+# Interactive debugging
+iso peers shell coordinator
+
+# Stop everything when done
+iso peers down
+```
+
+Example `.iso/peers.yml` for a coordinator/runner architecture:
+```yaml
+network: test-cluster
+
+peers:
+  coordinator:
+    hostname: coordinator
+    environment:
+      ROLE: coordinator
+    ports:
+      - "8443:8443"
+
+  runner1:
+    hostname: runner1
+    environment:
+      ROLE: runner
+      COORDINATOR_URL: "http://coordinator:8443"
+
+  runner2:
+    hostname: runner2
+    environment:
+      ROLE: runner
+      COORDINATOR_URL: "http://coordinator:8443"
+```
+
 ## Tips for AI Agents
 
 1. **Always check for .iso directory**: Before running iso commands, verify `.iso/Dockerfile` exists
@@ -425,6 +588,9 @@ ISO_SESSION=dev iso run <your-command>
 11. **Pre/Post hooks**: Use `.iso/pre-run.sh` for migrations/setup and `.iso/post-run.sh` for cleanup tasks
 12. **Hook executability**: Remember to make hook scripts executable with `chmod +x`
 13. **Cache volumes**: Use `cache` in config.yml for shared caches (Go modules, npm, etc.) across all sessions/worktrees
+14. **Peers for multi-container**: Use `.iso/peers.yml` when testing distributed systems or multi-node architectures
+15. **Peer networking**: Peers and services share a network - use hostnames for inter-container communication
+16. **Peer lifecycle**: Use `iso peers up` to start, `iso peers status` to check, and `iso peers down` to stop all peers
 
 ## Troubleshooting
 
@@ -433,3 +599,6 @@ ISO_SESSION=dev iso run <your-command>
 - **Image build fails**: Check Dockerfile syntax and base image availability
 - **"session is required" errors**: Commands like `iso start`, `iso stop`, and `iso status` require `--session` flag or `ISO_SESSION` env var
 - **Container/session conflicts**: Use `iso list` to see all sessions, then `iso stop --session <name>` or `iso stop --all-sessions` to clean up
+- **"no peers configured"**: Create `.iso/peers.yml` to use peer commands
+- **Peers can't communicate**: Verify hostnames in peers.yml match what your code expects; use `iso peers status` to check peer states
+- **"peer is not running"**: Run `iso peers up` before using `iso peers exec` or `iso peers shell`
