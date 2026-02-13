@@ -177,6 +177,29 @@ func (cm *containerManager) getCacheVolumeNameForPath(path string) string {
 	return fmt.Sprintf("%s-cache-%s", cm.baseProjectName, sanitized)
 }
 
+// getCacheBindMounts returns bind mount strings for cache paths.
+// If ISO_CACHE_DIR is set, uses host directory bind mounts; otherwise uses Docker named volumes.
+func (cm *containerManager) getCacheBindMounts() ([]string, error) {
+	cacheDir := os.Getenv("ISO_CACHE_DIR")
+	var binds []string
+
+	for _, cachePath := range cm.config.Cache {
+		if cacheDir != "" {
+			sanitized := strings.ReplaceAll(strings.Trim(cachePath, "/"), "/", "-")
+			hostPath := filepath.Join(cacheDir, sanitized)
+			if err := os.MkdirAll(hostPath, 0777); err != nil {
+				return nil, fmt.Errorf("failed to create cache dir %s: %w", hostPath, err)
+			}
+			binds = append(binds, fmt.Sprintf("%s:%s", hostPath, cachePath))
+		} else {
+			volumeName := cm.getCacheVolumeNameForPath(cachePath)
+			binds = append(binds, fmt.Sprintf("%s:%s", volumeName, cachePath))
+		}
+	}
+
+	return binds, nil
+}
+
 // ensureVolumes creates Docker volumes for configured volume and cache paths
 func (cm *containerManager) ensureVolumes() error {
 	// Create session-specific volumes
@@ -197,20 +220,22 @@ func (cm *containerManager) ensureVolumes() error {
 		}
 	}
 
-	// Create shared cache volumes
-	for _, cachePath := range cm.config.Cache {
-		volumeName := cm.getCacheVolumeNameForPath(cachePath)
+	// Create shared cache volumes (skip when using host directory via ISO_CACHE_DIR)
+	if os.Getenv("ISO_CACHE_DIR") == "" {
+		for _, cachePath := range cm.config.Cache {
+			volumeName := cm.getCacheVolumeNameForPath(cachePath)
 
-		// Check if volume exists
-		exists, err := cm.docker.volumeExists(volumeName)
-		if err != nil {
-			return err
-		}
-
-		if !exists {
-			slog.Debug("creating cache volume", "volume", volumeName, "path", cachePath)
-			if err := cm.docker.createVolume(volumeName); err != nil {
+			// Check if volume exists
+			exists, err := cm.docker.volumeExists(volumeName)
+			if err != nil {
 				return err
+			}
+
+			if !exists {
+				slog.Debug("creating cache volume", "volume", volumeName, "path", cachePath)
+				if err := cm.docker.createVolume(volumeName); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -286,11 +311,12 @@ func (cm *containerManager) startContainer() (string, error) {
 		binds = append(binds, fmt.Sprintf("%s:%s", volumeName, volumePath))
 	}
 
-	// Add shared cache volume mounts
-	for _, cachePath := range cm.config.Cache {
-		volumeName := cm.getCacheVolumeNameForPath(cachePath)
-		binds = append(binds, fmt.Sprintf("%s:%s", volumeName, cachePath))
+	// Add shared cache mounts (host dir or Docker volumes depending on ISO_CACHE_DIR)
+	cacheBinds, err := cm.getCacheBindMounts()
+	if err != nil {
+		return "", err
 	}
+	binds = append(binds, cacheBinds...)
 
 	// Add host directory bind mounts (with ~ expansion)
 	for _, bind := range cm.config.Binds {
@@ -1360,11 +1386,12 @@ func (cm *containerManager) startPeer(peerName string, config PeerConfig) (strin
 		binds = append(binds, fmt.Sprintf("%s:%s", volumeName, volumePath))
 	}
 
-	// Add shared cache volume mounts
-	for _, cachePath := range cm.config.Cache {
-		volumeName := cm.getCacheVolumeNameForPath(cachePath)
-		binds = append(binds, fmt.Sprintf("%s:%s", volumeName, cachePath))
+	// Add shared cache mounts (host dir or Docker volumes depending on ISO_CACHE_DIR)
+	cacheBinds, err := cm.getCacheBindMounts()
+	if err != nil {
+		return "", err
 	}
+	binds = append(binds, cacheBinds...)
 
 	// Add host directory bind mounts (with ~ expansion)
 	for _, bind := range cm.config.Binds {
