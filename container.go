@@ -359,6 +359,14 @@ func (cm *containerManager) startContainer() (string, error) {
 		},
 	}
 
+	exposedPorts, portBindings, err := parsePortMappings(cm.config.Ports)
+	if err != nil {
+		return "", err
+	}
+	if len(exposedPorts) > 0 {
+		containerConfig.ExposedPorts = exposedPorts
+	}
+
 	// Use AutoRemove for ephemeral containers - they should be cleaned up automatically
 	// Persistent containers need AutoRemove=false so they survive between runs
 	hostConfig := &container.HostConfig{
@@ -366,6 +374,9 @@ func (cm *containerManager) startContainer() (string, error) {
 		AutoRemove: isEphemeral,
 		Privileged: cm.config.Privileged,
 		ExtraHosts: cm.config.ExtraHosts,
+	}
+	if len(portBindings) > 0 {
+		hostConfig.PortBindings = portBindings
 	}
 
 	// Set up network configuration if we have services
@@ -1442,32 +1453,9 @@ func (cm *containerManager) startPeer(peerName string, config PeerConfig) (strin
 		},
 	}
 
-	// Parse port mappings
-	exposedPorts := nat.PortSet{}
-	portBindings := nat.PortMap{}
-
-	for _, portSpec := range config.Ports {
-		// Format: "hostPort:containerPort" or just "containerPort"
-		parts := strings.Split(portSpec, ":")
-		var hostPort, containerPort string
-		if len(parts) == 2 {
-			hostPort = parts[0]
-			containerPort = parts[1]
-		} else {
-			hostPort = parts[0]
-			containerPort = parts[0]
-		}
-
-		port, err := nat.NewPort("tcp", containerPort)
-		if err != nil {
-			return "", fmt.Errorf("invalid port %s: %w", containerPort, err)
-		}
-
-		exposedPorts[port] = struct{}{}
-		portBindings[port] = append(portBindings[port], nat.PortBinding{
-			HostIP:   "0.0.0.0",
-			HostPort: hostPort,
-		})
+	exposedPorts, portBindings, err := parsePortMappings(config.Ports)
+	if err != nil {
+		return "", err
 	}
 
 	if len(exposedPorts) > 0 {
@@ -1889,4 +1877,39 @@ func (cm *containerManager) getPeersStatus() ([]PeerStatus, error) {
 	}
 
 	return statuses, nil
+}
+
+// parsePortMappings turns docker-style "hostPort:containerPort" (or bare
+// "port") strings into the (ExposedPorts, PortBindings) pair expected by
+// the docker SDK. Shared between main-container and peer-container
+// creation so a single config shape works for both.
+func parsePortMappings(specs []string) (nat.PortSet, nat.PortMap, error) {
+	if len(specs) == 0 {
+		return nil, nil, nil
+	}
+	exposed := nat.PortSet{}
+	bindings := nat.PortMap{}
+	for _, portSpec := range specs {
+		parts := strings.Split(portSpec, ":")
+		var hostPort, containerPort string
+		if len(parts) == 2 {
+			hostPort = parts[0]
+			containerPort = parts[1]
+		} else {
+			hostPort = parts[0]
+			containerPort = parts[0]
+		}
+
+		port, err := nat.NewPort("tcp", containerPort)
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid port %s: %w", containerPort, err)
+		}
+
+		exposed[port] = struct{}{}
+		bindings[port] = append(bindings[port], nat.PortBinding{
+			HostIP:   "0.0.0.0",
+			HostPort: hostPort,
+		})
+	}
+	return exposed, bindings, nil
 }
