@@ -19,6 +19,12 @@ type Config struct {
 	Binds       []string          `yaml:"binds"`
 	Environment map[string]string `yaml:"environment"`
 	ExtraHosts  []string          `yaml:"extra_hosts"`
+	// Ports publishes container ports on the host in Docker's
+	// "hostPort:containerPort" format (or just "port" to use the same on both
+	// sides). Useful when a service running inside the main iso container
+	// needs to be reached from the host (e.g. a browser hitting a dev cluster
+	// for OAuth callback testing).
+	Ports []string `yaml:"ports"`
 }
 
 // ServiceConfig defines configuration for a service container
