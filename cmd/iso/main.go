@@ -210,7 +210,7 @@ func registerRunCommand(dispatcher *mflags.Dispatcher) {
 		resultChan := make(chan result, 1)
 
 		go func() {
-			exitCode, err := client.Run(actualCommand, envVars)
+			exitCode, err := client.Run(actualCommand, envVars, isEphemeral)
 			resultChan <- result{exitCode: exitCode, err: err}
 		}()
 
@@ -498,7 +498,7 @@ func listOrphaned() error {
 		return nil
 	}
 
-	fmt.Println("Orphaned ISO sessions (project directory no longer exists):\n")
+	fmt.Println("Orphaned ISO sessions (project directory no longer exists):")
 
 	totalContainers := 0
 	for _, session := range orphaned {
