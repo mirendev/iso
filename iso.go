@@ -37,14 +37,16 @@ func (c *Client) Close() error {
 	return c.containerManager.close()
 }
 
-// Run executes a command in the isolated environment and returns the exit code
-// envVars is a slice of environment variables in KEY=VALUE format
-func (c *Client) Run(command []string, envVars []string) (int, error) {
+// Run executes a command in the isolated environment and returns the exit code.
+// envVars is a slice of environment variables in KEY=VALUE format. ephemeral
+// selects the service-container lifecycle: ephemeral sessions get throwaway
+// per-run services, persistent sessions reuse the session's long-lived ones.
+func (c *Client) Run(command []string, envVars []string, ephemeral bool) (int, error) {
 	if len(command) == 0 {
 		return 0, fmt.Errorf("no command specified")
 	}
 
-	return c.containerManager.runCommand(command, envVars)
+	return c.containerManager.runCommand(command, envVars, ephemeral)
 }
 
 // Start starts all services with verbose output

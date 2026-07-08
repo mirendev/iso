@@ -533,23 +533,34 @@ func (cm *containerManager) stopFreshServices(serviceContainerIDs map[string]str
 
 // runCommand runs a command in the container and returns the exit code
 // envVars is a slice of environment variables in KEY=VALUE format
-func (cm *containerManager) runCommand(command []string, envVars []string) (int, error) {
-	// Check if we're in a persistent session with services already running
-	persistentServicesRunning := cm.arePersistentServicesRunning()
-
-	var serviceContainerIDs map[string]string
-	var err error
-
-	if !persistentServicesRunning {
-		// Only start fresh services for ephemeral sessions
+func (cm *containerManager) runCommand(command []string, envVars []string, ephemeral bool) (int, error) {
+	// Service containers are handled differently depending on the session type.
+	//
+	// Ephemeral sessions get their own throwaway service containers with unique
+	// per-run names, torn down when the command finishes. That is safe because
+	// an ephemeral session id is itself unique per invocation, so two runs never
+	// share a service DNS alias.
+	//
+	// Persistent sessions instead reuse the session's long-lived,
+	// deterministically named service containers, starting them if they are not
+	// up yet (the same containers `iso start` manages). Deterministic names let
+	// Docker's name-uniqueness guarantee prevent duplicate service sets, even
+	// across interrupted or overlapping runs. Previously a persistent-session
+	// `iso run` fell through to the fresh-service path whenever `iso start` had
+	// not been run first; an interrupted run then leaked its fresh services, and
+	// because they carried a unique run id the next run failed to see them and
+	// started a *second* set on the same DNS alias (e.g. two `etcd`), hanging
+	// every client that resolved the now-ambiguous hostname.
+	if ephemeral {
 		runID := fmt.Sprintf("%d", time.Now().UnixNano())
-
-		serviceContainerIDs, err = cm.startFreshServices(runID)
+		serviceContainerIDs, err := cm.startFreshServices(runID)
 		if err != nil {
 			return 0, err
 		}
-		// Ensure services are stopped after run completes
+		// Ensure the throwaway services are stopped after the run completes.
 		defer cm.stopFreshServices(serviceContainerIDs)
+	} else if err := cm.startAllServices(false); err != nil {
+		return 0, err
 	}
 
 	// Check if container is already running
@@ -970,26 +981,6 @@ func (cm *containerManager) getServiceContainerName(serviceName string) string {
 		return fmt.Sprintf("%s_%s", cm.projectName, serviceName)
 	}
 	return fmt.Sprintf("%s-%s_%s", cm.projectName, cm.session, serviceName)
-}
-
-// arePersistentServicesRunning checks if persistent services are already running
-// Returns true if all services are running without iso.fresh=true label
-func (cm *containerManager) arePersistentServicesRunning() bool {
-	if len(cm.services) == 0 {
-		return false
-	}
-
-	for serviceName := range cm.services {
-		containerName := cm.getServiceContainerName(serviceName)
-
-		// Check if persistent service container exists and is running
-		running, err := cm.docker.isContainerRunning(containerName)
-		if err != nil || !running {
-			return false
-		}
-	}
-
-	return true
 }
 
 // startService starts a single service container
