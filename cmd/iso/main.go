@@ -110,6 +110,17 @@ func getSession(flagValue string) (string, bool) {
 	return ephemeralID, true
 }
 
+// getPeersSession resolves the session for peers commands. It deliberately does
+// not fall back to an ephemeral session the way getSession does, because peers
+// have to stay addressable across separate invocations. Honouring ISO_SESSION is
+// what keeps two workspaces of the same repo off each other's peer containers.
+func getPeersSession() string {
+	if envSession := os.Getenv("ISO_SESSION"); envSession != "" {
+		return envSession
+	}
+	return iso.PeersDefaultSession
+}
+
 // isValidEnvVarName checks if a string is a valid environment variable name
 // Valid names contain only uppercase letters, lowercase letters, digits, and underscores
 // and must start with a letter or underscore
@@ -906,8 +917,7 @@ func registerPeersUpCommand(dispatcher *mflags.Dispatcher) {
 	fs := mflags.NewFlagSet("peers up")
 
 	handler := func(fs *mflags.FlagSet, args []string) error {
-		// Peers use a fixed "peers" session internally
-		client, err := iso.New("peers")
+		client, err := iso.New(getPeersSession())
 		if err != nil {
 			return err
 		}
@@ -928,7 +938,7 @@ func registerPeersDownCommand(dispatcher *mflags.Dispatcher) {
 	fs := mflags.NewFlagSet("peers down")
 
 	handler := func(fs *mflags.FlagSet, args []string) error {
-		client, err := iso.New("peers")
+		client, err := iso.New(getPeersSession())
 		if err != nil {
 			return err
 		}
@@ -954,7 +964,7 @@ func registerPeersExecCommand(dispatcher *mflags.Dispatcher) {
 	fs.AllowUnknownFlags(true)
 
 	handler := func(fs *mflags.FlagSet, args []string) error {
-		client, err := iso.New("peers")
+		client, err := iso.New(getPeersSession())
 		if err != nil {
 			return err
 		}
@@ -1007,7 +1017,7 @@ func registerPeersShellCommand(dispatcher *mflags.Dispatcher) {
 
 		peerName := args[0]
 
-		client, err := iso.New("peers")
+		client, err := iso.New(getPeersSession())
 		if err != nil {
 			return err
 		}
@@ -1035,7 +1045,7 @@ func registerPeersStatusCommand(dispatcher *mflags.Dispatcher) {
 	fs := mflags.NewFlagSet("peers status")
 
 	handler := func(fs *mflags.FlagSet, args []string) error {
-		client, err := iso.New("peers")
+		client, err := iso.New(getPeersSession())
 		if err != nil {
 			return err
 		}
