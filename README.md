@@ -127,6 +127,34 @@ Stop and remove the container and services (image is preserved):
 ./iso stop
 ```
 
+### See What Is Using Disk
+
+List every ISO container across all projects, along with the size of the volumes each one is using:
+
+```bash
+./iso list
+```
+
+Each project gets a breakdown separating its per-session volumes from the cache volumes shared across all its sessions and worktrees. Measuring sizes makes the Docker daemon walk each volume's files, so pass `--no-sizes` if you just want the container list.
+
+### Clean Up Sessions
+
+Go through the sessions for the current project and pick the ones you are done with:
+
+```bash
+./iso cleanup
+```
+
+This removes each selected session's containers, network, and session volumes, and reports the disk space reclaimed. Shared cache volumes are left alone — remove those with `./iso prune`.
+
+```bash
+./iso cleanup --session old-branch   # Remove a named session outright
+./iso cleanup --stopped --yes        # Remove every session with nothing running
+./iso cleanup --all-projects         # Go through every project's sessions
+./iso cleanup --orphaned             # Remove sessions whose project directory is gone
+./iso cleanup --dry-run --yes        # See what would be freed, without freeing it
+```
+
 ## Configuration
 
 ### Project Structure

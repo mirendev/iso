@@ -198,6 +198,32 @@ func (cm *containerManager) getCacheBindMounts() ([]string, error) {
 	return binds, nil
 }
 
+// sessionVolumeLabels returns the labels stamped on a session-scoped volume.
+// These let `iso list` and `iso cleanup` classify a volume without having to
+// guess from its name.
+func (cm *containerManager) sessionVolumeLabels(path string) map[string]string {
+	return map[string]string{
+		"iso.managed":      "true",
+		"iso.project.name": cm.worktreeProjectName,
+		"iso.project.dir":  cm.projectRoot,
+		"iso.session":      cm.session,
+		"iso.volume.type":  "session",
+		"iso.volume.path":  path,
+	}
+}
+
+// cacheVolumeLabels returns the labels stamped on a shared cache volume. Cache
+// volumes are keyed to the base project so all worktrees share them, so they
+// carry no session or directory.
+func (cm *containerManager) cacheVolumeLabels(path string) map[string]string {
+	return map[string]string{
+		"iso.managed":      "true",
+		"iso.project.name": cm.baseProjectName,
+		"iso.volume.type":  "cache",
+		"iso.volume.path":  path,
+	}
+}
+
 // ensureVolumes creates Docker volumes for configured volume and cache paths
 func (cm *containerManager) ensureVolumes() error {
 	// Create session-specific volumes
@@ -212,7 +238,7 @@ func (cm *containerManager) ensureVolumes() error {
 
 		if !exists {
 			slog.Debug("creating volume", "volume", volumeName, "path", volumePath)
-			if err := cm.docker.createVolume(volumeName); err != nil {
+			if err := cm.docker.createVolume(volumeName, cm.sessionVolumeLabels(volumePath)); err != nil {
 				return err
 			}
 		}
@@ -231,7 +257,7 @@ func (cm *containerManager) ensureVolumes() error {
 
 			if !exists {
 				slog.Debug("creating cache volume", "volume", volumeName, "path", cachePath)
-				if err := cm.docker.createVolume(volumeName); err != nil {
+				if err := cm.docker.createVolume(volumeName, cm.cacheVolumeLabels(cachePath)); err != nil {
 					return err
 				}
 			}
