@@ -317,26 +317,33 @@ func ListAll() ([]IsoContainer, error) {
 //
 // This function does not require being in a project directory.
 func ListSessions(withSizes bool) ([]Session, error) {
-	containers, err := ListAll()
-	if err != nil {
-		return nil, err
-	}
-
-	if len(containers) == 0 {
-		return nil, nil
-	}
-
 	docker, err := newDockerClient()
 	if err != nil {
 		return nil, err
 	}
 	defer docker.close()
 
+	dockerContainers, err := docker.listIsoContainers()
+	if err != nil {
+		return nil, err
+	}
+
+	if len(dockerContainers) == 0 {
+		return nil, nil
+	}
+
+	containers := toIsoContainers(dockerContainers)
+
 	volumeDetails, err := docker.listVolumeDetails(withSizes)
 	if err != nil {
-		// Sizes are a nicety - a failure here should not stop us from
-		// reporting sessions.
-		slog.Debug("failed to read volume details", "error", err)
+		// Sizes are a nicety - a failure here should not stop us reporting
+		// sessions. Warn rather than debug when the user asked for sizes,
+		// since otherwise the column is empty with no explanation.
+		if withSizes {
+			slog.Warn("failed to read volume sizes, continuing without them", "error", err)
+		} else {
+			slog.Debug("failed to read volume details", "error", err)
+		}
 		volumeDetails = map[string]volumeDetail{}
 	}
 
@@ -508,9 +515,9 @@ func RemoveSessions(sessions []Session, dryRun bool) (RemovalReport, error) {
 		// Stop and remove each container
 		timeout := 10
 		for _, c := range session.Containers {
-			if _, err := docker.stopAndRemoveContainer(c.ID, c.Name, timeout); err != nil {
-				// Error already logged by helper
-			}
+			// Errors are already logged by the helper, and one container
+			// failing should not stop us cleaning up the rest.
+			_, _ = docker.stopAndRemoveContainer(c.ID, c.Name, timeout)
 		}
 	}
 
@@ -544,9 +551,11 @@ func RemoveSessions(sessions []Session, dryRun bool) (RemovalReport, error) {
 
 	for networkName := range networksToRemove {
 		if err := docker.removeNetwork(networkName); err != nil {
-			// Ignore "not found" - the network was already removed. A network
-			// still in use by another session is also fine to skip.
-			if !strings.Contains(err.Error(), "not found") {
+			// "not found" means it was already removed; "active endpoints"
+			// means another session is still on it. Both are expected, so
+			// neither deserves a warning.
+			msg := err.Error()
+			if !strings.Contains(msg, "not found") && !strings.Contains(msg, "active endpoints") {
 				slog.Warn("failed to remove network", "network", networkName, "error", err)
 			}
 			continue

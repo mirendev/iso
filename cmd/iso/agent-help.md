@@ -6,7 +6,7 @@ ISO is a tool for running commands in isolated Docker containers with automatic 
 
 ISO requires a `.iso` directory in your project root containing:
 
-```
+```text
 project-root/
 ├── .iso/
 │   ├── Dockerfile          # Required: Defines the container environment
@@ -361,7 +361,7 @@ Each container row includes a `VOLUMES` column with the total on-disk size of th
 Sizes come from the Docker daemon, which walks each volume's files to measure it. This is usually fast but can take a while with very large caches — use `--no-sizes` to skip it, in which case the `VOLUMES` column shows a volume count instead.
 
 Example:
-```
+```text
 myapp (/home/user/myapp):
   CONTAINER ID NAME            SESSION                 VOLUMES  STATUS
   a0fc1e45f9c8 shell           dev                      5.6 GB  Up 8 minutes

@@ -592,9 +592,11 @@ func registerListCommand(dispatcher *mflags.Dispatcher) {
 }
 
 // displayVolumeName shortens Docker's 64-character generated names, which
-// would otherwise swamp the column.
+// would otherwise swamp the column. The length check keeps this safe even
+// though the only current caller marks a volume anonymous solely when the name
+// is a 64-character hash - that invariant lives in another package.
 func displayVolumeName(v iso.VolumeUsage) string {
-	if v.Anonymous {
+	if v.Anonymous && len(v.Name) > 12 {
 		return v.Name[:12] + "..."
 	}
 	return v.Name
@@ -842,6 +844,22 @@ func gatherCleanupCandidates(f cleanupFilter) ([]iso.Session, error) {
 		named[name] = true
 	}
 
+	// Reject unknown session names before the state filters run. Checking after
+	// them would report `--session dev --stopped` as "no session named dev"
+	// whenever dev happens to be running, which is not what went wrong.
+	for _, name := range f.named {
+		found := false
+		for _, s := range sessions {
+			if s.Session == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("no session named %q found", name)
+		}
+	}
+
 	var candidates []iso.Session
 	for _, s := range sessions {
 		if f.orphaned && !s.Orphaned {
@@ -854,21 +872,6 @@ func gatherCleanupCandidates(f cleanupFilter) ([]iso.Session, error) {
 			continue
 		}
 		candidates = append(candidates, s)
-	}
-
-	// Report session names that matched nothing so a typo is not mistaken for
-	// a successful cleanup.
-	for _, name := range f.named {
-		found := false
-		for _, s := range candidates {
-			if s.Session == name {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return nil, fmt.Errorf("no session named %q found", name)
-		}
 	}
 
 	return candidates, nil
@@ -911,8 +914,18 @@ func describeSession(s iso.Session) {
 
 	if size, known := s.SessionSize(); known {
 		fmt.Printf("  Volumes to remove: %s\n", formatBytes(size))
-	} else if len(s.Volumes) > 0 {
-		fmt.Printf("  Volumes to remove: %d\n", len(s.Volumes))
+	} else {
+		// Count only what cleanup actually deletes. Shared cache volumes stay,
+		// so including them here would overstate what the user is agreeing to.
+		removable := 0
+		for _, v := range s.Volumes {
+			if !v.Cache {
+				removable++
+			}
+		}
+		if removable > 0 {
+			fmt.Printf("  Volumes to remove: %d\n", removable)
+		}
 	}
 }
 
