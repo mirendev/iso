@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"crypto/rand"
 	_ "embed"
 	"encoding/base64"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -436,55 +438,146 @@ func registerStatusCommand(dispatcher *mflags.Dispatcher) {
 	dispatcher.Dispatch("status", cmd)
 }
 
+// formatBytes renders a byte count in the largest unit that keeps it readable.
+func formatBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+
+	div, exp := int64(unit), 0
+	for size := n / unit; size >= unit && exp < 4; size /= unit {
+		div *= unit
+		exp++
+	}
+
+	value := float64(n) / float64(div)
+	format := "%.1f %cB"
+	if value >= 10 {
+		format = "%.0f %cB"
+	}
+
+	return fmt.Sprintf(format, value, "KMGTP"[exp])
+}
+
+// formatAge renders a duration as a coarse human-readable age.
+func formatAge(t time.Time) string {
+	if t.IsZero() {
+		return "unknown"
+	}
+
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	}
+}
+
+// containerVolumeSize totals the volumes a single container mounts, looking up
+// each one in the session's volume list. Returns false if any size is unknown.
+func containerVolumeSize(c iso.IsoContainer, volumes []iso.VolumeUsage) (int64, bool) {
+	sizes := make(map[string]iso.VolumeUsage, len(volumes))
+	for _, v := range volumes {
+		sizes[v.Name] = v
+	}
+
+	var total int64
+	for _, name := range c.Volumes {
+		v, ok := sizes[name]
+		if !ok || !v.SizeKnown {
+			return 0, false
+		}
+		total += v.Size
+	}
+
+	return total, true
+}
+
 // registerListCommand registers the 'list' command
 func registerListCommand(dispatcher *mflags.Dispatcher) {
 	fs := mflags.NewFlagSet("list")
 
 	orphaned := fs.Bool("orphaned", 'o', false, "Show only orphaned sessions (project directory missing)")
+	noSizes := fs.Bool("no-sizes", 'n', false, "Skip volume size calculation (much faster with large caches)")
 
 	handler := func(fs *mflags.FlagSet, args []string) error {
+		withSizes := !*noSizes
+
 		if *orphaned {
-			return listOrphaned()
+			return listOrphaned(withSizes)
 		}
 
-		containers, err := iso.ListAll()
+		sessions, err := iso.ListSessions(withSizes)
 		if err != nil {
 			return err
 		}
 
-		if len(containers) == 0 {
+		if len(sessions) == 0 {
 			fmt.Println("No ISO containers found")
 			return nil
 		}
 
-		// Group containers by project
-		projectGroups := make(map[string][]iso.IsoContainer)
+		// Group sessions by project, preserving the sorted order ListSessions
+		// returns.
+		var projectOrder []string
+		projectSessions := make(map[string][]iso.Session)
 		projectDirs := make(map[string]string)
-		for _, c := range containers {
-			projectGroups[c.ProjectName] = append(projectGroups[c.ProjectName], c)
-			projectDirs[c.ProjectName] = c.ProjectDir
+		for _, s := range sessions {
+			if _, seen := projectSessions[s.ProjectName]; !seen {
+				projectOrder = append(projectOrder, s.ProjectName)
+			}
+			projectSessions[s.ProjectName] = append(projectSessions[s.ProjectName], s)
+			projectDirs[s.ProjectName] = s.ProjectDir
 		}
 
-		// Print each project group
-		for projectName, projectContainers := range projectGroups {
+		for _, projectName := range projectOrder {
 			fmt.Printf("\n%s (%s):\n", projectName, projectDirs[projectName])
-			fmt.Printf("  %-12s %-15s %-20s %s\n", "CONTAINER ID", "NAME", "SESSION", "STATUS")
+			fmt.Printf("  %-12s %-15s %-20s %10s  %s\n",
+				"CONTAINER ID", "NAME", "SESSION", "VOLUMES", "STATUS")
 
-			for _, c := range projectContainers {
-				status := c.Status
+			// Deduplicate volumes across the project's sessions - cache
+			// volumes are shared, so they show up under several of them.
+			projectVolumes := make(map[string]iso.VolumeUsage)
 
-				sessionInfo := c.Session
-				if c.IsService {
-					status += " (service: " + c.ServiceName + ")"
+			for _, s := range projectSessions[projectName] {
+				for _, v := range s.Volumes {
+					projectVolumes[v.Name] = v
 				}
 
-				fmt.Printf("  %-12s %-15s %-20s %s\n",
-					c.ID,
-					c.ShortName,
-					sessionInfo,
-					status,
-				)
+				for _, c := range s.Containers {
+					status := c.Status
+					if c.IsService {
+						status += " (service: " + c.ServiceName + ")"
+					}
+
+					volumeCol := "-"
+					if len(c.Volumes) > 0 {
+						if size, known := containerVolumeSize(c, s.Volumes); known {
+							volumeCol = formatBytes(size)
+						} else if len(c.Volumes) == 1 {
+							volumeCol = "1 volume"
+						} else {
+							volumeCol = fmt.Sprintf("%d volumes", len(c.Volumes))
+						}
+					}
+
+					fmt.Printf("  %-12s %-15s %-20s %10s  %s\n",
+						c.ShortID,
+						c.ShortName,
+						c.Session,
+						volumeCol,
+						status,
+					)
+				}
 			}
+
+			printProjectVolumes(projectVolumes)
 		}
 		fmt.Println()
 
@@ -498,10 +591,92 @@ func registerListCommand(dispatcher *mflags.Dispatcher) {
 	dispatcher.Dispatch("list", cmd)
 }
 
-func listOrphaned() error {
-	orphaned, err := iso.ListOrphaned()
+// displayVolumeName shortens Docker's 64-character generated names, which
+// would otherwise swamp the column. The length check keeps this safe even
+// though the only current caller marks a volume anonymous solely when the name
+// is a 64-character hash - that invariant lives in another package.
+func displayVolumeName(v iso.VolumeUsage) string {
+	if v.Anonymous && len(v.Name) > 12 {
+		return v.Name[:12] + "..."
+	}
+	return v.Name
+}
+
+// volumeKind labels a volume with what cleaning up the session does to it.
+func volumeKind(v iso.VolumeUsage) string {
+	switch {
+	case v.Cache:
+		return "cache (shared, kept until 'iso prune')"
+	case v.Anonymous:
+		return "anonymous (image-declared)"
+	default:
+		return "session"
+	}
+}
+
+// printProjectVolumes prints the deduplicated volume breakdown for a project,
+// separating shared cache volumes from per-session ones.
+func printProjectVolumes(volumes map[string]iso.VolumeUsage) {
+	if len(volumes) == 0 {
+		return
+	}
+
+	names := make([]string, 0, len(volumes))
+	for name := range volumes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	var cacheTotal, sessionTotal int64
+	allKnown := true
+	nameWidth := 0
+	for _, v := range volumes {
+		if w := len(displayVolumeName(v)); w > nameWidth {
+			nameWidth = w
+		}
+		if !v.SizeKnown {
+			allKnown = false
+			continue
+		}
+		if v.Cache {
+			cacheTotal += v.Size
+		} else {
+			sessionTotal += v.Size
+		}
+	}
+
+	header := "\n  Volumes:"
+	if allKnown {
+		header = fmt.Sprintf("\n  Volumes: %s total (%s shared cache, %s in sessions)",
+			formatBytes(cacheTotal+sessionTotal),
+			formatBytes(cacheTotal),
+			formatBytes(sessionTotal))
+	}
+	fmt.Println(header)
+
+	for _, name := range names {
+		v := volumes[name]
+
+		size := "-"
+		if v.SizeKnown {
+			size = formatBytes(v.Size)
+		}
+
+		fmt.Printf("    %10s  %-*s  %s\n", size, nameWidth, displayVolumeName(v), volumeKind(v))
+	}
+}
+
+func listOrphaned(withSizes bool) error {
+	sessions, err := iso.ListSessions(withSizes)
 	if err != nil {
 		return err
+	}
+
+	var orphaned []iso.Session
+	for _, s := range sessions {
+		if s.Orphaned {
+			orphaned = append(orphaned, s)
+		}
 	}
 
 	if len(orphaned) == 0 {
@@ -512,10 +687,12 @@ func listOrphaned() error {
 	fmt.Println("Orphaned ISO sessions (project directory no longer exists):")
 
 	totalContainers := 0
+	var reclaimable int64
+	reclaimableKnown := true
+
 	for _, session := range orphaned {
-		fmt.Printf("%s:\n", session.ProjectDir)
-		fmt.Printf("  %-12s %-35s %-18s %s\n",
-			"CONTAINER ID", "NAME", "SESSION", "STATUS")
+		fmt.Printf("\n%s (session: %s):\n", session.ProjectDir, session.Session)
+		fmt.Printf("  %-12s %-35s %s\n", "CONTAINER ID", "NAME", "STATUS")
 
 		for _, c := range session.Containers {
 			status := c.Status
@@ -523,14 +700,24 @@ func listOrphaned() error {
 				status += " (service: " + c.ServiceName + ")"
 			}
 
-			fmt.Printf("  %-12s %-35s %-18s %s\n",
-				c.ID[:12], c.ShortName, c.Session, status)
+			fmt.Printf("  %-12s %-35s %s\n", c.ShortID, c.ShortName, status)
 			totalContainers++
 		}
-		fmt.Println()
+
+		if size, known := session.SessionSize(); known {
+			reclaimable += size
+			if size > 0 {
+				fmt.Printf("  Volumes: %s\n", formatBytes(size))
+			}
+		} else {
+			reclaimableKnown = false
+		}
 	}
 
-	fmt.Printf("Total orphaned containers: %d\n", totalContainers)
+	fmt.Printf("\nTotal orphaned containers: %d\n", totalContainers)
+	if reclaimableKnown && reclaimable > 0 {
+		fmt.Printf("Reclaimable volume space: %s\n", formatBytes(reclaimable))
+	}
 	fmt.Println("To clean up orphaned sessions, run: iso cleanup --orphaned")
 
 	return nil
@@ -564,119 +751,250 @@ func registerPruneCommand(dispatcher *mflags.Dispatcher) {
 func registerCleanupCommand(dispatcher *mflags.Dispatcher) {
 	fs := mflags.NewFlagSet("cleanup")
 
-	orphaned := fs.Bool("orphaned", 'o', false, "Clean up orphaned sessions")
+	orphaned := fs.Bool("orphaned", 'o', false, "Clean up orphaned sessions (project directory missing)")
+	allProjects := fs.Bool("all-projects", 'A', false, "Consider sessions from every project, not just this one")
+	sessionList := fs.String("session", 's', "", "Comma-separated session names to remove without prompting")
+	stopped := fs.Bool("stopped", 'x', false, "Only consider sessions with no running containers")
+	assumeYes := fs.Bool("yes", 'y', false, "Remove every matching session without prompting")
 	interactive := fs.Bool("interactive", 'i', false, "Ask for confirmation per session")
 	dryRun := fs.Bool("dry-run", 'd', false, "Show what would be cleaned without doing it")
+	noSizes := fs.Bool("no-sizes", 'n', false, "Skip volume size calculation (much faster with large caches)")
 
 	handler := func(fs *mflags.FlagSet, args []string) error {
-		if !*orphaned {
-			return fmt.Errorf("cleanup command requires --orphaned flag")
-		}
+		named := splitSessionNames(*sessionList)
 
-		orphanedSessions, err := iso.ListOrphaned()
+		// Selecting orphans or naming sessions explicitly says which sessions
+		// to act on, so those default to running straight through. A bare
+		// `iso cleanup` prompts for each session instead.
+		prompt := *interactive || (!*orphaned && len(named) == 0 && !*assumeYes)
+
+		candidates, err := gatherCleanupCandidates(cleanupFilter{
+			orphaned:    *orphaned,
+			allProjects: *allProjects,
+			named:       named,
+			stopped:     *stopped,
+			withSizes:   !*noSizes,
+		})
 		if err != nil {
 			return err
 		}
 
-		if len(orphanedSessions) == 0 {
-			fmt.Println("No orphaned sessions to clean up")
+		if len(candidates) == 0 {
+			fmt.Println("No sessions to clean up")
 			return nil
 		}
 
-		if *interactive {
-			return cleanupInteractive(orphanedSessions, *dryRun)
+		selected := candidates
+		if prompt {
+			selected = promptForSessions(candidates)
+			if len(selected) == 0 {
+				fmt.Println("No sessions selected for cleanup")
+				return nil
+			}
 		}
 
-		return cleanupAll(orphanedSessions, *dryRun)
+		return removeSessions(selected, *dryRun)
 	}
 
 	cmd := mflags.NewCommand(fs, handler,
-		mflags.WithUsage("Clean up orphaned sessions whose project directories no longer exist"),
+		mflags.WithUsage("Clean up sessions you are done with (interactive by default)"),
 	)
 
 	dispatcher.Dispatch("cleanup", cmd)
 }
 
-func cleanupInteractive(sessions []iso.OrphanedSession, dryRun bool) error {
-	fmt.Printf("Found %d orphaned session(s):\n\n", len(sessions))
-
-	var sessionsToClean []iso.OrphanedSession
-
-	for _, session := range sessions {
-		serviceCount := 0
-		for _, c := range session.Containers {
-			if c.IsService {
-				serviceCount++
-			}
-		}
-
-		fmt.Printf("Session: %s / %s\n", session.ProjectName, session.Session)
-		fmt.Printf("  Project directory: %s\n", session.ProjectDir)
-		fmt.Printf("  Status: Directory not found\n")
-		fmt.Printf("  Containers: %d", len(session.Containers))
-		if serviceCount > 0 {
-			fmt.Printf(" (%d service(s))", serviceCount)
-		}
-		fmt.Println()
-		fmt.Println()
-
-		if dryRun {
-			fmt.Println("  [DRY RUN] Would stop and remove this session")
-			sessionsToClean = append(sessionsToClean, session)
-		} else {
-			fmt.Print("  Stop and remove this session? [y/N]: ")
-			var response string
-			fmt.Scanln(&response)
-
-			if response == "y" || response == "Y" {
-				sessionsToClean = append(sessionsToClean, session)
-				fmt.Printf("  ✓ Marked for cleanup\n")
-			} else {
-				fmt.Println("  Skipped")
-			}
-		}
-		fmt.Println()
-	}
-
-	if len(sessionsToClean) == 0 {
-		fmt.Println("No sessions selected for cleanup")
-		return nil
-	}
-
-	totalContainers := 0
-	for _, s := range sessionsToClean {
-		totalContainers += len(s.Containers)
-	}
-
-	if dryRun {
-		fmt.Printf("[DRY RUN] Would clean up %d session(s) (%d container(s))\n",
-			len(sessionsToClean), totalContainers)
-	} else {
-		// Clean up the selected sessions
-		count, err := iso.CleanupOrphanedSessions(sessionsToClean, false)
-		if err != nil {
-			return err
-		}
-		fmt.Printf("Cleaned up %d session(s) (%d container(s))\n",
-			len(sessionsToClean), count)
-	}
-
-	return nil
+// cleanupFilter describes which sessions `iso cleanup` should consider.
+type cleanupFilter struct {
+	orphaned    bool
+	allProjects bool
+	named       []string
+	stopped     bool
+	withSizes   bool
 }
 
-func cleanupAll(sessions []iso.OrphanedSession, dryRun bool) error {
-	totalContainers, err := iso.CleanupOrphaned(dryRun)
+// splitSessionNames parses the comma-separated --session value.
+func splitSessionNames(value string) []string {
+	var names []string
+	for _, name := range strings.Split(value, ",") {
+		if name = strings.TrimSpace(name); name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// gatherCleanupCandidates returns the sessions matching the filter. Orphaned
+// sessions always come from every project, since by definition we cannot be
+// standing in their project directory.
+func gatherCleanupCandidates(f cleanupFilter) ([]iso.Session, error) {
+	var sessions []iso.Session
+	var err error
+
+	if f.orphaned || f.allProjects {
+		sessions, err = iso.ListSessions(f.withSizes)
+	} else {
+		sessions, err = iso.ListProjectSessions("", f.withSizes)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	named := make(map[string]bool, len(f.named))
+	for _, name := range f.named {
+		named[name] = true
+	}
+
+	// Reject unknown session names before the state filters run. Checking after
+	// them would report `--session dev --stopped` as "no session named dev"
+	// whenever dev happens to be running, which is not what went wrong.
+	for _, name := range f.named {
+		found := false
+		for _, s := range sessions {
+			if s.Session == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("no session named %q found", name)
+		}
+	}
+
+	var candidates []iso.Session
+	for _, s := range sessions {
+		if f.orphaned && !s.Orphaned {
+			continue
+		}
+		if len(named) > 0 && !named[s.Session] {
+			continue
+		}
+		if f.stopped && s.Running {
+			continue
+		}
+		candidates = append(candidates, s)
+	}
+
+	return candidates, nil
+}
+
+// describeSession prints a one-block summary of a session for the cleanup UI.
+func describeSession(s iso.Session) {
+	label := fmt.Sprintf("%s / %s", s.ProjectName, s.Session)
+	if s.IsEphemeral() {
+		label += "  (ephemeral leftover)"
+	}
+	fmt.Printf("Session: %s\n", label)
+	fmt.Printf("  Project directory: %s", s.ProjectDir)
+	if s.Orphaned {
+		fmt.Print("  (missing)")
+	}
+	fmt.Println()
+
+	serviceCount := 0
+	runningCount := 0
+	for _, c := range s.Containers {
+		if c.IsService {
+			serviceCount++
+		}
+		if c.Running {
+			runningCount++
+		}
+	}
+
+	fmt.Printf("  Containers: %d", len(s.Containers))
+	if serviceCount > 0 {
+		fmt.Printf(" (%d service(s))", serviceCount)
+	}
+	if runningCount > 0 {
+		fmt.Printf(" - %d running", runningCount)
+	}
+	fmt.Println()
+
+	fmt.Printf("  Created: %s\n", formatAge(s.Created))
+
+	if size, known := s.SessionSize(); known {
+		fmt.Printf("  Volumes to remove: %s\n", formatBytes(size))
+	} else {
+		// Count only what cleanup actually deletes. Shared cache volumes stay,
+		// so including them here would overstate what the user is agreeing to.
+		removable := 0
+		for _, v := range s.Volumes {
+			if !v.Cache {
+				removable++
+			}
+		}
+		if removable > 0 {
+			fmt.Printf("  Volumes to remove: %d\n", removable)
+		}
+	}
+}
+
+// promptForSessions asks about each candidate session and returns the ones the
+// user accepted.
+func promptForSessions(sessions []iso.Session) []iso.Session {
+	fmt.Printf("Found %d session(s):\n\n", len(sessions))
+
+	reader := bufio.NewReader(os.Stdin)
+	var selected []iso.Session
+
+	for _, s := range sessions {
+		describeSession(s)
+
+		if s.Running {
+			fmt.Print("  Session is RUNNING. Stop and remove it? [y/N]: ")
+		} else {
+			fmt.Print("  Remove this session? [y/N]: ")
+		}
+
+		response, err := reader.ReadString('\n')
+		if err != nil && response == "" {
+			// stdin closed - treat as declining the rest
+			fmt.Println()
+			break
+		}
+
+		switch strings.ToLower(strings.TrimSpace(response)) {
+		case "y", "yes":
+			selected = append(selected, s)
+			fmt.Println("  ✓ Marked for cleanup")
+		case "q", "quit":
+			fmt.Println("  Stopping here")
+			fmt.Println()
+			return selected
+		default:
+			fmt.Println("  Skipped")
+		}
+		fmt.Println()
+	}
+
+	return selected
+}
+
+// removeSessions performs (or, for a dry run, describes) the cleanup.
+func removeSessions(sessions []iso.Session, dryRun bool) error {
+	if dryRun {
+		for _, s := range sessions {
+			describeSession(s)
+			fmt.Println()
+		}
+	}
+
+	report, err := iso.RemoveSessions(sessions, dryRun)
 	if err != nil {
 		return err
 	}
 
+	verb := "Cleaned up"
 	if dryRun {
-		fmt.Printf("[DRY RUN] Would clean up %d orphaned session(s) (%d container(s))\n",
-			len(sessions), totalContainers)
-	} else {
-		fmt.Printf("Cleaned up %d orphaned session(s) (%d container(s))\n",
-			len(sessions), totalContainers)
+		verb = "[DRY RUN] Would clean up"
 	}
+
+	summary := fmt.Sprintf("%s %d session(s): %d container(s), %d volume(s), %d network(s)",
+		verb, report.Sessions, report.Containers, report.Volumes, report.Networks)
+	if report.Bytes > 0 {
+		summary += fmt.Sprintf(", %s reclaimed", formatBytes(report.Bytes))
+	}
+	fmt.Println(summary)
 
 	return nil
 }

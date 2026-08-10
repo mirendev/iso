@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -158,23 +159,103 @@ func (c *Client) Status() (*Status, error) {
 
 // IsoContainer represents an ISO-managed container
 type IsoContainer struct {
-	ID          string
+	ID          string // full container ID
+	ShortID     string // 12-character ID, as Docker displays it
 	Name        string
 	ShortName   string
 	ProjectName string
 	ProjectDir  string
 	Session     string
 	Status      string
+	Running     bool
+	Created     time.Time
 	IsService   bool
 	ServiceName string
+	Volumes     []string // named volumes mounted into this container
+	Networks    []string // networks this container is attached to
 }
 
-// OrphanedSession represents a session whose project directory no longer exists
-type OrphanedSession struct {
-	ProjectDir  string
+// VolumeUsage describes one Docker volume attached to a session.
+type VolumeUsage struct {
+	Name string
+	Size int64 // bytes on disk; only meaningful when SizeKnown is true
+	// SizeKnown is false when sizes were not requested, or when the daemon
+	// could not determine the size.
+	SizeKnown bool
+	// Cache reports whether this is a cache volume shared across every
+	// session and worktree of the project. Cache volumes survive session
+	// cleanup and are removed by `iso prune`.
+	Cache bool
+	// Anonymous reports a volume Docker created automatically because the
+	// image declared a VOLUME, rather than one iso asked for. These belong to
+	// a single container and are removed along with their session.
+	Anonymous bool
+}
+
+// Session groups all the Docker resources belonging to one ISO session.
+type Session struct {
 	ProjectName string
+	ProjectDir  string
 	Session     string
 	Containers  []IsoContainer
+	// Volumes lists every named volume the session's containers mount,
+	// deduplicated, with cache volumes flagged.
+	Volumes []VolumeUsage
+	// Orphaned reports that the project directory no longer exists, so the
+	// session can never be used again.
+	Orphaned bool
+	// Running reports whether any of the session's containers is running.
+	Running bool
+	// Created is the creation time of the session's oldest container.
+	Created time.Time
+}
+
+// SessionSize returns the total size of the session's own volumes, excluding
+// shared cache volumes. This is the space that cleaning up the session frees.
+func (s Session) SessionSize() (bytes int64, known bool) {
+	known = true
+	for _, v := range s.Volumes {
+		if v.Cache {
+			continue
+		}
+		if !v.SizeKnown {
+			known = false
+			continue
+		}
+		bytes += v.Size
+	}
+	return bytes, known
+}
+
+// IsEphemeral reports whether this is a throwaway session created by a bare
+// `iso run`, rather than one the user named.
+func (s Session) IsEphemeral() bool {
+	return strings.HasPrefix(s.Session, "eph-")
+}
+
+// isCacheVolume classifies a volume as a shared cache. Volumes created by
+// current versions of iso carry a label; the name check covers volumes created
+// before labelling was added.
+func isCacheVolume(name string, detail volumeDetail) bool {
+	if t, ok := detail.Labels["iso.volume.type"]; ok {
+		return t == "cache"
+	}
+	return strings.Contains(name, "-cache-")
+}
+
+// isAnonymousVolume reports whether Docker generated this volume's name, which
+// it does as a 64-character hex string when an image declares a VOLUME and
+// nothing named it.
+func isAnonymousVolume(name string) bool {
+	if len(name) != 64 {
+		return false
+	}
+	for _, r := range name {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // List returns all ISO-managed containers
@@ -184,23 +265,32 @@ func (c *Client) List() ([]IsoContainer, error) {
 		return nil, err
 	}
 
-	// Convert internal type to public type
+	return toIsoContainers(dockerContainers), nil
+}
+
+// toIsoContainers converts internal container records to the public type
+func toIsoContainers(dockerContainers []isoContainerInfo) []IsoContainer {
 	result := make([]IsoContainer, len(dockerContainers))
 	for i, dc := range dockerContainers {
 		result[i] = IsoContainer{
 			ID:          dc.ID,
+			ShortID:     dc.ShortID,
 			Name:        dc.Name,
 			ShortName:   dc.ShortName,
 			ProjectName: dc.ProjectName,
 			ProjectDir:  dc.ProjectDir,
 			Session:     dc.Session,
 			Status:      dc.Status,
+			Running:     dc.Running,
+			Created:     dc.Created,
 			IsService:   dc.IsService,
 			ServiceName: dc.ServiceName,
+			Volumes:     dc.Volumes,
+			Networks:    dc.Networks,
 		}
 	}
 
-	return result, nil
+	return result
 }
 
 // ListAll returns all ISO-managed containers across all projects
@@ -217,30 +307,44 @@ func ListAll() ([]IsoContainer, error) {
 		return nil, err
 	}
 
-	// Convert internal type to public type
-	result := make([]IsoContainer, len(dockerContainers))
-	for i, dc := range dockerContainers {
-		result[i] = IsoContainer{
-			ID:          dc.ID,
-			Name:        dc.Name,
-			ShortName:   dc.ShortName,
-			ProjectName: dc.ProjectName,
-			ProjectDir:  dc.ProjectDir,
-			Session:     dc.Session,
-			Status:      dc.Status,
-			IsService:   dc.IsService,
-			ServiceName: dc.ServiceName,
-		}
-	}
-
-	return result, nil
+	return toIsoContainers(dockerContainers), nil
 }
 
-// ListOrphaned returns all ISO sessions whose project directories no longer exist
-func ListOrphaned() ([]OrphanedSession, error) {
-	containers, err := ListAll()
+// ListSessions groups every ISO container across all projects into sessions and
+// attaches the volumes each one uses. When withSizes is true it also asks the
+// Docker daemon how much disk each volume occupies, which is accurate but slow
+// on large caches because the daemon walks the files.
+//
+// This function does not require being in a project directory.
+func ListSessions(withSizes bool) ([]Session, error) {
+	docker, err := newDockerClient()
 	if err != nil {
 		return nil, err
+	}
+	defer docker.close()
+
+	dockerContainers, err := docker.listIsoContainers()
+	if err != nil {
+		return nil, err
+	}
+
+	if len(dockerContainers) == 0 {
+		return nil, nil
+	}
+
+	containers := toIsoContainers(dockerContainers)
+
+	volumeDetails, err := docker.listVolumeDetails(withSizes)
+	if err != nil {
+		// Sizes are a nicety - a failure here should not stop us reporting
+		// sessions. Warn rather than debug when the user asked for sizes,
+		// since otherwise the column is empty with no explanation.
+		if withSizes {
+			slog.Warn("failed to read volume sizes, continuing without them", "error", err)
+		} else {
+			slog.Debug("failed to read volume details", "error", err)
+		}
+		volumeDetails = map[string]volumeDetail{}
 	}
 
 	// Group by project directory + session
@@ -248,156 +352,265 @@ func ListOrphaned() ([]OrphanedSession, error) {
 		ProjectDir string
 		Session    string
 	}
-	sessions := make(map[sessionKey][]IsoContainer)
+	grouped := make(map[sessionKey][]IsoContainer)
+	var order []sessionKey
 
 	for _, c := range containers {
 		key := sessionKey{c.ProjectDir, c.Session}
-		sessions[key] = append(sessions[key], c)
+		if _, seen := grouped[key]; !seen {
+			order = append(order, key)
+		}
+		grouped[key] = append(grouped[key], c)
 	}
 
-	// Check which directories don't exist
-	var orphaned []OrphanedSession
-	for key, containers := range sessions {
+	sessions := make([]Session, 0, len(order))
+	for _, key := range order {
+		members := grouped[key]
+
+		session := Session{
+			ProjectDir:  key.ProjectDir,
+			ProjectName: members[0].ProjectName,
+			Session:     key.Session,
+			Containers:  members,
+			Created:     members[0].Created,
+		}
+
 		if _, err := os.Stat(key.ProjectDir); os.IsNotExist(err) {
-			orphaned = append(orphaned, OrphanedSession{
-				ProjectDir:  key.ProjectDir,
-				ProjectName: containers[0].ProjectName,
-				Session:     key.Session,
-				Containers:  containers,
-			})
-		}
-	}
-
-	return orphaned, nil
-}
-
-// CleanupOrphaned stops and removes all orphaned sessions
-// Returns the number of containers cleaned up
-func CleanupOrphaned(dryRun bool) (int, error) {
-	orphaned, err := ListOrphaned()
-	if err != nil {
-		return 0, err
-	}
-
-	if len(orphaned) == 0 {
-		return 0, nil
-	}
-
-	docker, err := newDockerClient()
-	if err != nil {
-		return 0, err
-	}
-	defer docker.close()
-
-	totalContainers := 0
-	networksToRemove := make(map[string]bool)
-
-	for _, session := range orphaned {
-		slog.Info("cleaning up orphaned session",
-			"project", session.ProjectName,
-			"session", session.Session,
-			"dir", session.ProjectDir,
-			"containers", len(session.Containers))
-
-		if dryRun {
-			totalContainers += len(session.Containers)
-			continue
+			session.Orphaned = true
 		}
 
-		// Stop and remove each container
-		timeout := 10
-		for _, c := range session.Containers {
-			if _, err := docker.stopAndRemoveContainer(c.ID, c.Name, timeout); err != nil {
-				// Error already logged by helper
+		// Collect the distinct volumes across the session's containers.
+		seenVolumes := make(map[string]bool)
+		for _, c := range members {
+			if c.Running {
+				session.Running = true
 			}
-			totalContainers++
-		}
+			if c.Created.Before(session.Created) {
+				session.Created = c.Created
+			}
 
-		// Track network to remove
-		if session.Session == "default" {
-			networksToRemove[fmt.Sprintf("%s-network", session.ProjectName)] = true
-		} else {
-			networksToRemove[fmt.Sprintf("%s-%s-network", session.ProjectName, session.Session)] = true
-		}
-	}
-
-	if !dryRun && len(networksToRemove) > 0 {
-		// Give Docker a moment to clean up container endpoints
-		time.Sleep(100 * time.Millisecond)
-
-		// Remove networks
-		for networkName := range networksToRemove {
-			if err := docker.removeNetwork(networkName); err != nil {
-				if !strings.Contains(err.Error(), "not found") {
-					slog.Warn("failed to remove network", "network", networkName, "error", err)
+			for _, volName := range c.Volumes {
+				if seenVolumes[volName] {
+					continue
 				}
+				seenVolumes[volName] = true
+
+				detail := volumeDetails[volName]
+				session.Volumes = append(session.Volumes, VolumeUsage{
+					Name:      volName,
+					Size:      detail.Size,
+					SizeKnown: detail.SizeKnown,
+					Cache:     isCacheVolume(volName, detail),
+					Anonymous: isAnonymousVolume(volName),
+				})
 			}
+		}
+
+		sort.Slice(session.Volumes, func(i, j int) bool {
+			return session.Volumes[i].Name < session.Volumes[j].Name
+		})
+
+		sessions = append(sessions, session)
+	}
+
+	sort.Slice(sessions, func(i, j int) bool {
+		if sessions[i].ProjectName != sessions[j].ProjectName {
+			return sessions[i].ProjectName < sessions[j].ProjectName
+		}
+		return sessions[i].Session < sessions[j].Session
+	})
+
+	return sessions, nil
+}
+
+// ListProjectSessions returns the sessions belonging to the project rooted at
+// projectDir. Pass an empty string to use the project containing the current
+// directory.
+func ListProjectSessions(projectDir string, withSizes bool) ([]Session, error) {
+	if projectDir == "" {
+		_, projectRoot, found := findIsoDir()
+		if !found {
+			return nil, fmt.Errorf("no .iso directory found - please create one with a Dockerfile and optional services.yml")
+		}
+		projectDir = projectRoot
+	}
+
+	all, err := ListSessions(withSizes)
+	if err != nil {
+		return nil, err
+	}
+
+	var sessions []Session
+	for _, s := range all {
+		if s.ProjectDir == projectDir {
+			sessions = append(sessions, s)
 		}
 	}
 
-	return totalContainers, nil
+	return sessions, nil
 }
 
-// CleanupOrphanedSessions stops and removes specific orphaned sessions
-// Returns the number of containers cleaned up
-func CleanupOrphanedSessions(sessions []OrphanedSession, dryRun bool) (int, error) {
+// isIsoOwnedNetwork reports whether cleanup is allowed to remove a network.
+//
+// Attached networks come straight off the containers, which is what makes
+// cleanup work for peers networks whose name comes from peers.yml. The flip
+// side is that a network the user attached an ISO container to by hand shows up
+// the same way, and removing that would reach outside what ISO created.
+//
+// Networks ISO creates now carry labels. The name check covers networks created
+// before the labels existed; it matches only names ISO itself would generate, so
+// an unrecognized network is left alone rather than removed.
+func isIsoOwnedNetwork(name string, labels map[string]string, session Session) bool {
+	if labels["iso.managed"] == "true" {
+		return true
+	}
+
+	project := session.ProjectName
+	generated := []string{
+		fmt.Sprintf("%s-network", project),
+		fmt.Sprintf("%s-%s-network", project, session.Session),
+		fmt.Sprintf("%s-iso-peers", project),
+		fmt.Sprintf("%s-%s-iso-peers", project, session.Session),
+	}
+
+	for _, candidate := range generated {
+		if name == candidate {
+			return true
+		}
+	}
+
+	return false
+}
+
+// RemovalReport summarizes what a session cleanup removed.
+type RemovalReport struct {
+	Sessions   int
+	Containers int
+	Volumes    int
+	Networks   int
+	// Bytes is the disk space reclaimed by removing volumes. It is only
+	// populated when the sessions were listed with sizes.
+	Bytes int64
+}
+
+// RemoveSessions stops and removes the containers, networks, and session-scoped
+// volumes for each of the given sessions. Shared cache volumes are deliberately
+// left in place - those are removed by `iso prune`.
+//
+// Cleanup is best effort: a failure on one resource is logged and the rest still
+// get removed.
+func RemoveSessions(sessions []Session, dryRun bool) (RemovalReport, error) {
+	var report RemovalReport
+
 	if len(sessions) == 0 {
-		return 0, nil
+		return report, nil
 	}
 
 	docker, err := newDockerClient()
 	if err != nil {
-		return 0, err
+		return report, err
 	}
 	defer docker.close()
 
-	totalContainers := 0
+	// Labels tell us which networks ISO created. A failure here leaves the map
+	// empty, which falls back to the naming check below - conservative either
+	// way, since an unrecognized network is left alone.
+	networkLabels, err := docker.listNetworkLabels()
+	if err != nil {
+		slog.Debug("failed to read network labels", "error", err)
+		networkLabels = map[string]map[string]string{}
+	}
+
 	networksToRemove := make(map[string]bool)
+	volumesToRemove := make(map[string]int64)
+	volumeSizeKnown := make(map[string]bool)
 
 	for _, session := range sessions {
-		slog.Info("cleaning up orphaned session",
+		report.Sessions++
+
+		for _, c := range session.Containers {
+			report.Containers++
+			for _, netName := range c.Networks {
+				if !isIsoOwnedNetwork(netName, networkLabels[netName], session) {
+					// A network ISO did not create, e.g. one the user attached
+					// the container to by hand. Not ours to delete.
+					slog.Debug("leaving foreign network alone", "network", netName)
+					continue
+				}
+				networksToRemove[netName] = true
+			}
+		}
+
+		for _, v := range session.Volumes {
+			if v.Cache {
+				continue
+			}
+			volumesToRemove[v.Name] = v.Size
+			volumeSizeKnown[v.Name] = v.SizeKnown
+		}
+
+		if dryRun {
+			continue
+		}
+
+		slog.Info("cleaning up session",
 			"project", session.ProjectName,
 			"session", session.Session,
 			"dir", session.ProjectDir,
 			"containers", len(session.Containers))
 
-		if dryRun {
-			totalContainers += len(session.Containers)
-			continue
-		}
-
 		// Stop and remove each container
 		timeout := 10
 		for _, c := range session.Containers {
-			if _, err := docker.stopAndRemoveContainer(c.ID, c.Name, timeout); err != nil {
-				// Error already logged by helper
-			}
-			totalContainers++
-		}
-
-		// Track network to remove
-		if session.Session == "default" {
-			networksToRemove[fmt.Sprintf("%s-network", session.ProjectName)] = true
-		} else {
-			networksToRemove[fmt.Sprintf("%s-%s-network", session.ProjectName, session.Session)] = true
+			// Errors are already logged by the helper, and one container
+			// failing should not stop us cleaning up the rest.
+			_, _ = docker.stopAndRemoveContainer(c.ID, c.Name, timeout)
 		}
 	}
 
-	if !dryRun && len(networksToRemove) > 0 {
-		// Give Docker a moment to clean up container endpoints
-		time.Sleep(100 * time.Millisecond)
-
-		// Remove networks
-		for networkName := range networksToRemove {
-			if err := docker.removeNetwork(networkName); err != nil {
-				if !strings.Contains(err.Error(), "not found") {
-					slog.Warn("failed to remove network", "network", networkName, "error", err)
-				}
+	if dryRun {
+		report.Volumes = len(volumesToRemove)
+		report.Networks = len(networksToRemove)
+		for name, size := range volumesToRemove {
+			if volumeSizeKnown[name] {
+				report.Bytes += size
 			}
+		}
+		return report, nil
+	}
+
+	// Give Docker a moment to release container endpoints and volume
+	// references before removing what they were attached to.
+	time.Sleep(100 * time.Millisecond)
+
+	for volumeName, size := range volumesToRemove {
+		if err := docker.removeVolume(volumeName); err != nil {
+			if !strings.Contains(err.Error(), "no such volume") {
+				slog.Warn("failed to remove volume", "volume", volumeName, "error", err)
+			}
+			continue
+		}
+		report.Volumes++
+		if volumeSizeKnown[volumeName] {
+			report.Bytes += size
 		}
 	}
 
-	return totalContainers, nil
+	for networkName := range networksToRemove {
+		if err := docker.removeNetwork(networkName); err != nil {
+			// "not found" means it was already removed; "active endpoints"
+			// means another session is still on it. Both are expected, so
+			// neither deserves a warning.
+			msg := err.Error()
+			if !strings.Contains(msg, "not found") && !strings.Contains(msg, "active endpoints") {
+				slog.Warn("failed to remove network", "network", networkName, "error", err)
+			}
+			continue
+		}
+		report.Networks++
+	}
+
+	return report, nil
 }
 
 // StopAll stops and removes all ISO-managed containers and networks across all projects

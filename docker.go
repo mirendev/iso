@@ -7,12 +7,16 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"sort"
 	"strings"
+	"time"
 
+	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/build"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
@@ -260,15 +264,33 @@ func (d *dockerClient) removeImage(imageName string) error {
 	return nil
 }
 
-// createNetwork creates a Docker network
-func (d *dockerClient) createNetwork(networkName string) (string, error) {
+// createNetwork creates a Docker network with the given labels. The labels are
+// what lets cleanup tell a network ISO created from one the user brought, which
+// matters because peers.yml can point ISO at a network of the user's choosing.
+func (d *dockerClient) createNetwork(networkName string, labels map[string]string) (string, error) {
 	resp, err := d.client.NetworkCreate(d.ctx, networkName, network.CreateOptions{
 		Driver: "bridge",
+		Labels: labels,
 	})
 	if err != nil {
 		return "", fmt.Errorf("failed to create network: %w", err)
 	}
 	return resp.ID, nil
+}
+
+// listNetworkLabels returns the labels of every Docker network, keyed by name.
+func (d *dockerClient) listNetworkLabels() (map[string]map[string]string, error) {
+	networks, err := d.client.NetworkList(d.ctx, network.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list networks: %w", err)
+	}
+
+	labels := make(map[string]map[string]string, len(networks))
+	for _, net := range networks {
+		labels[net.Name] = net.Labels
+	}
+
+	return labels, nil
 }
 
 // networkExists checks if a Docker network exists
@@ -356,10 +378,12 @@ func (d *dockerClient) pullImage(imageName string) error {
 	return nil
 }
 
-// createVolume creates a Docker volume
-func (d *dockerClient) createVolume(volumeName string) error {
+// createVolume creates a Docker volume with the given labels. Labels let us
+// find and classify a volume later without relying on its name.
+func (d *dockerClient) createVolume(volumeName string, labels map[string]string) error {
 	_, err := d.client.VolumeCreate(d.ctx, volume.CreateOptions{
-		Name: volumeName,
+		Name:   volumeName,
+		Labels: labels,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create volume: %w", err)
@@ -390,16 +414,76 @@ func (d *dockerClient) removeVolume(volumeName string) error {
 
 // isoContainerInfo represents an ISO-managed container (internal type)
 type isoContainerInfo struct {
-	ID          string
+	ID          string // full container ID
+	ShortID     string // 12-character ID, as Docker displays it
 	Name        string
 	ShortName   string
 	ProjectName string
 	ProjectDir  string
 	Session     string
 	Status      string
+	Running     bool
+	Created     time.Time
 	Fresh       bool
 	IsService   bool
 	ServiceName string
+	Volumes     []string // names of the named volumes mounted into this container
+	Networks    []string // names of the networks this container is attached to
+}
+
+// containerInfoFromSummary converts a Docker container listing entry into our
+// internal representation.
+func containerInfoFromSummary(c container.Summary) isoContainerInfo {
+	name := ""
+	if len(c.Names) > 0 {
+		// Docker prefixes names with '/'
+		name = strings.TrimPrefix(c.Names[0], "/")
+	}
+
+	shortID := c.ID
+	if len(shortID) > 12 {
+		shortID = shortID[:12]
+	}
+
+	// Collect the named volumes this container mounts. Bind mounts and tmpfs
+	// have no volume name and are skipped.
+	var volumes []string
+	for _, m := range c.Mounts {
+		if m.Type == mount.TypeVolume && m.Name != "" {
+			volumes = append(volumes, m.Name)
+		}
+	}
+
+	// Collect attached networks, skipping Docker's built-in ones which must
+	// never be removed.
+	var networks []string
+	if c.NetworkSettings != nil {
+		for netName := range c.NetworkSettings.Networks {
+			if netName == "bridge" || netName == "host" || netName == "none" {
+				continue
+			}
+			networks = append(networks, netName)
+		}
+		sort.Strings(networks)
+	}
+
+	return isoContainerInfo{
+		ID:          c.ID,
+		ShortID:     shortID,
+		Name:        name,
+		ShortName:   c.Labels["iso.name"],
+		ProjectName: c.Labels["iso.project.name"],
+		ProjectDir:  c.Labels["iso.project.dir"],
+		Session:     c.Labels["iso.session"],
+		Status:      c.Status,
+		Running:     c.State == container.StateRunning,
+		Created:     time.Unix(c.Created, 0),
+		Fresh:       c.Labels["iso.fresh"] == "true",
+		IsService:   c.Labels["iso.service"] == "true",
+		ServiceName: c.Labels["iso.service.name"],
+		Volumes:     volumes,
+		Networks:    networks,
+	}
 }
 
 // listIsoContainers lists all ISO-managed containers
@@ -416,24 +500,7 @@ func (d *dockerClient) listIsoContainers() ([]isoContainerInfo, error) {
 
 	var isoContainers []isoContainerInfo
 	for _, c := range containers {
-		name := ""
-		if len(c.Names) > 0 {
-			// Docker prefixes names with '/'
-			name = strings.TrimPrefix(c.Names[0], "/")
-		}
-
-		isoContainers = append(isoContainers, isoContainerInfo{
-			ID:          c.ID[:12], // Short ID
-			Name:        name,
-			ShortName:   c.Labels["iso.name"],
-			ProjectName: c.Labels["iso.project.name"],
-			ProjectDir:  c.Labels["iso.project.dir"],
-			Session:     c.Labels["iso.session"],
-			Status:      c.Status,
-			Fresh:       c.Labels["iso.fresh"] == "true",
-			IsService:   c.Labels["iso.service"] == "true",
-			ServiceName: c.Labels["iso.service.name"],
-		})
+		isoContainers = append(isoContainers, containerInfoFromSummary(c))
 	}
 
 	return isoContainers, nil
@@ -455,24 +522,7 @@ func (d *dockerClient) listProjectContainers(projectName, session string) ([]iso
 
 	var isoContainers []isoContainerInfo
 	for _, c := range containers {
-		name := ""
-		if len(c.Names) > 0 {
-			// Docker prefixes names with '/'
-			name = strings.TrimPrefix(c.Names[0], "/")
-		}
-
-		isoContainers = append(isoContainers, isoContainerInfo{
-			ID:          c.ID,
-			Name:        name,
-			ShortName:   c.Labels["iso.name"],
-			ProjectName: c.Labels["iso.project.name"],
-			ProjectDir:  c.Labels["iso.project.dir"],
-			Session:     c.Labels["iso.session"],
-			Status:      c.Status,
-			Fresh:       c.Labels["iso.fresh"] == "true",
-			IsService:   c.Labels["iso.service"] == "true",
-			ServiceName: c.Labels["iso.service.name"],
-		})
+		isoContainers = append(isoContainers, containerInfoFromSummary(c))
 	}
 
 	return isoContainers, nil
@@ -493,24 +543,7 @@ func (d *dockerClient) listProjectContainersAllSessions(projectName string) ([]i
 
 	var isoContainers []isoContainerInfo
 	for _, c := range containers {
-		name := ""
-		if len(c.Names) > 0 {
-			// Docker prefixes names with '/'
-			name = strings.TrimPrefix(c.Names[0], "/")
-		}
-
-		isoContainers = append(isoContainers, isoContainerInfo{
-			ID:          c.ID,
-			Name:        name,
-			ShortName:   c.Labels["iso.name"],
-			ProjectName: c.Labels["iso.project.name"],
-			ProjectDir:  c.Labels["iso.project.dir"],
-			Session:     c.Labels["iso.session"],
-			Status:      c.Status,
-			Fresh:       c.Labels["iso.fresh"] == "true",
-			IsService:   c.Labels["iso.service"] == "true",
-			ServiceName: c.Labels["iso.service.name"],
-		})
+		isoContainers = append(isoContainers, containerInfoFromSummary(c))
 	}
 
 	return isoContainers, nil
@@ -541,26 +574,64 @@ func (d *dockerClient) listStaleEphemeralContainers(projectName string) ([]isoCo
 			continue
 		}
 
-		name := ""
-		if len(c.Names) > 0 {
-			name = strings.TrimPrefix(c.Names[0], "/")
-		}
-
-		staleContainers = append(staleContainers, isoContainerInfo{
-			ID:          c.ID,
-			Name:        name,
-			ShortName:   c.Labels["iso.name"],
-			ProjectName: c.Labels["iso.project.name"],
-			ProjectDir:  c.Labels["iso.project.dir"],
-			Session:     c.Labels["iso.session"],
-			Status:      c.Status,
-			Fresh:       isFresh,
-			IsService:   c.Labels["iso.service"] == "true",
-			ServiceName: c.Labels["iso.service.name"],
-		})
+		staleContainers = append(staleContainers, containerInfoFromSummary(c))
 	}
 
 	return staleContainers, nil
+}
+
+// volumeDetail describes a Docker volume, optionally with its on-disk size.
+type volumeDetail struct {
+	Name      string
+	Labels    map[string]string
+	Size      int64
+	SizeKnown bool
+}
+
+// listVolumeDetails returns every Docker volume on the host. When withSizes is
+// true it asks the daemon for disk usage as well, which makes the daemon walk
+// each volume's files - accurate but slow on large caches.
+func (d *dockerClient) listVolumeDetails(withSizes bool) (map[string]volumeDetail, error) {
+	details := make(map[string]volumeDetail)
+
+	if withSizes {
+		usage, err := d.client.DiskUsage(d.ctx, types.DiskUsageOptions{
+			Types: []types.DiskUsageObject{types.VolumeObject},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to get volume disk usage: %w", err)
+		}
+
+		for _, vol := range usage.Volumes {
+			if vol == nil {
+				continue
+			}
+			detail := volumeDetail{Name: vol.Name, Labels: vol.Labels}
+			// UsageData is nil when the daemon could not determine the size.
+			// A size of -1 means "not computed" in Docker's API.
+			if vol.UsageData != nil && vol.UsageData.Size >= 0 {
+				detail.Size = vol.UsageData.Size
+				detail.SizeKnown = true
+			}
+			details[vol.Name] = detail
+		}
+
+		return details, nil
+	}
+
+	volumes, err := d.client.VolumeList(d.ctx, volume.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list volumes: %w", err)
+	}
+
+	for _, vol := range volumes.Volumes {
+		if vol == nil {
+			continue
+		}
+		details[vol.Name] = volumeDetail{Name: vol.Name, Labels: vol.Labels}
+	}
+
+	return details, nil
 }
 
 // listDanglingVolumes finds volumes that are not in use by any container
@@ -602,24 +673,10 @@ func (d *dockerClient) listPeerContainers(projectName, session string) ([]isoCon
 
 	var peerContainers []isoContainerInfo
 	for _, c := range containers {
-		name := ""
-		if len(c.Names) > 0 {
-			// Docker prefixes names with '/'
-			name = strings.TrimPrefix(c.Names[0], "/")
-		}
-
-		peerContainers = append(peerContainers, isoContainerInfo{
-			ID:          c.ID,
-			Name:        name,
-			ShortName:   c.Labels["iso.name"],
-			ProjectName: c.Labels["iso.project.name"],
-			ProjectDir:  c.Labels["iso.project.dir"],
-			Session:     c.Labels["iso.session"],
-			Status:      c.Status,
-			Fresh:       c.Labels["iso.fresh"] == "true",
-			IsService:   false,
-			ServiceName: "",
-		})
+		info := containerInfoFromSummary(c)
+		info.IsService = false
+		info.ServiceName = ""
+		peerContainers = append(peerContainers, info)
 	}
 
 	return peerContainers, nil

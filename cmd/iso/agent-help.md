@@ -6,7 +6,7 @@ ISO is a tool for running commands in isolated Docker containers with automatic 
 
 ISO requires a `.iso` directory in your project root containing:
 
-```
+```text
 project-root/
 ├── .iso/
 │   ├── Dockerfile          # Required: Defines the container environment
@@ -59,7 +59,7 @@ extra_hosts:
 
 - **workdir** (string, default: `/workspace`): The directory path inside the container where your project root will be mounted. This affects where your code is accessible in the container.
 
-- **volumes** (list of strings, optional): List of container paths that should be mounted as persistent Docker volumes instead of being part of the project directory. These volumes are isolated per worktree/session and are automatically removed when you run `iso stop`. Useful for application state or data that should persist between runs but remain isolated per worktree.
+- **volumes** (list of strings, optional): List of container paths that should be mounted as persistent Docker volumes instead of being part of the project directory. These volumes are isolated per worktree/session and are automatically removed when you run `iso stop` or `iso cleanup`. Useful for application state or data that should persist between runs but remain isolated per worktree.
 
 - **cache** (list of strings, optional): List of container paths that should be mounted as shared cache volumes. Cache volumes are **shared across all worktrees** of the same repository and persist until you run `iso prune`. Ideal for package manager caches (Go modules, npm, pip, cargo) that can be safely shared to avoid redundant downloads.
 
@@ -352,6 +352,62 @@ Show the current status of the image and container for a session. **Requires** a
 
 List all ISO-managed containers across all projects and sessions, grouped by project.
 
+Each container row includes a `VOLUMES` column with the total on-disk size of the named volumes that container mounts. Each project is followed by a deduplicated breakdown of its volumes, split into per-session volumes and shared cache volumes.
+
+**Options**:
+- `--orphaned` / `-o`: Show only orphaned sessions (project directory no longer exists)
+- `--no-sizes` / `-n`: Skip volume size calculation
+
+Sizes come from the Docker daemon, which walks each volume's files to measure it. This is usually fast but can take a while with very large caches — use `--no-sizes` to skip it, in which case the `VOLUMES` column shows a volume count instead.
+
+Example:
+```text
+myapp (/home/user/myapp):
+  CONTAINER ID NAME            SESSION                 VOLUMES  STATUS
+  a0fc1e45f9c8 shell           dev                      3.5 GB  Up 8 minutes
+  4888fb7967b0 postgres        dev                      500 MB  Up 8 minutes (service: postgres)
+
+  Volumes: 4.0 GB total (2.0 GB shared cache, 2.0 GB in sessions)
+        500 MB  69196412a7fc...        anonymous (image-declared)
+        1.5 GB  myapp-dev-data         session
+        2.0 GB  myapp-cache-go-pkg     cache (shared, kept until 'iso prune')
+```
+
+Volumes are labelled by what session cleanup does to them:
+- **session**: created by ISO for this session, removed with it
+- **anonymous**: created by Docker because the service image declares a `VOLUME`, removed with the session
+- **cache (shared)**: shared by every session and worktree of the project, kept until `iso prune`
+
+### iso cleanup
+
+Remove sessions you are finished with, along with their containers, networks, and session volumes. Shared cache volumes are never touched — use `iso prune` for those.
+
+With no flags, `iso cleanup` walks the current project's sessions one at a time and asks about each. Answer `y` to remove, anything else to skip, or `q` to stop without touching the remaining sessions.
+
+**Options**:
+- `--all-projects` / `-A`: Consider sessions from every project, not just the current one
+- `--orphaned` / `-o`: Only sessions whose project directory no longer exists (removed without prompting)
+- `--session <names>` / `-s`: Comma-separated session names to remove without prompting
+- `--stopped` / `-x`: Only consider sessions with no running containers
+- `--yes` / `-y`: Remove every matching session without prompting
+- `--interactive` / `-i`: Force the per-session prompt, even with `--orphaned` or `--session`
+- `--dry-run` / `-d`: Show what would be removed without removing it
+- `--no-sizes` / `-n`: Skip volume size calculation
+
+Selecting sessions explicitly — via `--orphaned`, `--session`, or `--yes` — skips the prompt, since you have already said what to remove. Naming a session that does not exist is an error rather than a silent no-op.
+
+Examples:
+```bash
+iso cleanup                          # Walk this project's sessions, asking about each
+iso cleanup --session old-branch     # Remove one session outright
+iso cleanup --stopped --yes          # Remove every session with nothing running
+iso cleanup --all-projects           # Walk every project's sessions
+iso cleanup --orphaned               # Remove sessions whose project directory is gone
+iso cleanup --all-projects --dry-run --yes   # See everything that would be freed
+```
+
+`iso cleanup --session <name>` and `iso stop --session <name>` both tear a session down. Prefer `cleanup` when you are reclaiming disk and want to see what you are freeing first; it works across projects and reports the space recovered.
+
 ### iso reset
 
 Reset a persistent session's container by stopping and recreating it. **Requires** a session name via `--session` flag or `ISO_SESSION` env var. Useful when you need a fresh container state but want to keep the same session.
@@ -492,7 +548,7 @@ iso start  # Starts 'dev' session
 # Check what's running
 iso status  # Shows status of 'dev' session
 
-# List all sessions across all projects
+# List all sessions across all projects, with the disk each one is using
 iso list
 
 # Stop the session when done
@@ -500,6 +556,9 @@ iso stop
 
 # Or stop all sessions for the project
 iso stop --all-sessions
+
+# Or go through the sessions you no longer need, one at a time
+iso cleanup
 ```
 
 ### Working with Ephemeral Sessions
@@ -582,7 +641,7 @@ peers:
 5. **Image caching**: Images are cached; use `--rebuild` only when Dockerfile changes
 6. **Ephemeral by default**: Each `iso run` uses an ephemeral session that auto-cleans after execution
 7. **Persistent sessions**: Use `--session <name>` or set `ISO_SESSION` env var for reusable containers across multiple commands
-8. **Session management**: Use `iso list` to see all sessions, `iso stop --session <name>` to clean up specific sessions
+8. **Session management**: Use `iso list` to see all sessions and the disk they use, `iso stop --session <name>` to tear down a specific session, or `iso cleanup` to go through the sessions you no longer need
 9. **Network isolation**: Each session gets its own isolated network
 10. **Service readiness**: Add `port` to services in `services.yml` for automatic readiness checks - no manual wait loops needed
 11. **Pre/Post hooks**: Use `.iso/pre-run.sh` for migrations/setup and `.iso/post-run.sh` for cleanup tasks
@@ -599,6 +658,8 @@ peers:
 - **Image build fails**: Check Dockerfile syntax and base image availability
 - **"session is required" errors**: Commands like `iso start`, `iso stop`, and `iso status` require `--session` flag or `ISO_SESSION` env var
 - **Container/session conflicts**: Use `iso list` to see all sessions, then `iso stop --session <name>` or `iso stop --all-sessions` to clean up
+- **Running low on disk**: `iso list` shows the size of every volume; `iso cleanup` removes sessions you are done with, and `iso prune` removes the shared cache volumes
+- **`iso list` feels slow**: Measuring volume sizes makes the Docker daemon walk each volume's files. Use `iso list --no-sizes` to skip it
 - **"no peers configured"**: Create `.iso/peers.yml` to use peer commands
 - **Peers can't communicate**: Verify hostnames in peers.yml match what your code expects; use `iso peers status` to check peer states
 - **"peer is not running"**: Run `iso peers up` before using `iso peers exec` or `iso peers shell`
