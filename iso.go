@@ -14,6 +14,17 @@ import (
 	"github.com/docker/docker/api/types/container"
 )
 
+// PeersDefaultSession is the session peers land in when the caller names none.
+// Peers predate session support and were pinned to this one name, so keeping it
+// as the fallback leaves standalone `iso peers` invocations exactly as they were
+// while letting ISO_SESSION scope them per workspace.
+//
+// It follows that "peers" is effectively reserved: setting ISO_SESSION=peers
+// puts a regular session and the default peers session under one name, so
+// stopping either stops both. That is consistent (one session name, one
+// session) rather than wrong, but it is surprising enough to be worth knowing.
+const PeersDefaultSession = "peers"
+
 // Client manages the isolated Docker environment
 type Client struct {
 	containerManager *containerManager
@@ -93,7 +104,18 @@ func (c *Client) Reset() error {
 }
 
 // Stop stops and removes the container and all services
+//
+// Peers belong to the session as well, so stopping the session takes them with
+// it. Without this they outlive the workspace that started them, and because a
+// container keeps the bind mounts it was created with, the survivors go on
+// serving a /src that may since have been deleted. A later `peers up` from
+// another workspace then adopts them instead of starting its own.
 func (c *Client) Stop() error {
+	// Unconditional: peers are found by label, not by config, so this still
+	// reaps them when .iso/peers.yml has been edited away since they started.
+	if err := c.containerManager.stopAllPeers(); err != nil {
+		slog.Warn("failed to stop peers while stopping session", "session", c.containerManager.session, "error", err)
+	}
 	return c.containerManager.stopContainer()
 }
 

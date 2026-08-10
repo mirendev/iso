@@ -582,13 +582,17 @@ func (d *dockerClient) listDanglingVolumes() ([]string, error) {
 	return volumeNames, nil
 }
 
-// listPeerContainers lists all ISO-managed peer containers for a specific project
-func (d *dockerClient) listPeerContainers(projectName string) ([]isoContainerInfo, error) {
+// listPeerContainers lists ISO-managed peer containers for a project and session.
+// Filtering on session matters because the project label is shared by every
+// workspace of the same repo, so without it one workspace's teardown would reach
+// into another's peers.
+func (d *dockerClient) listPeerContainers(projectName, session string) ([]isoContainerInfo, error) {
 	containers, err := d.client.ContainerList(d.ctx, container.ListOptions{
 		All: true,
 		Filters: filters.NewArgs(
 			filters.Arg("label", "iso.managed=true"),
 			filters.Arg("label", fmt.Sprintf("iso.project.name=%s", projectName)),
+			filters.Arg("label", fmt.Sprintf("iso.session=%s", session)),
 			filters.Arg("label", "iso.peer=true"),
 		),
 	})

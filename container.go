@@ -113,14 +113,12 @@ func newContainerManager(session string) (*containerManager, error) {
 		return nil, fmt.Errorf("failed to extract Linux binary: %w", err)
 	}
 
-	// Determine peers network name
-	var peersNetworkName string
-	if peers != nil {
-		if peers.Network != "" {
-			peersNetworkName = peers.Network
-		} else {
-			peersNetworkName = fmt.Sprintf("%s-iso-peers", worktreeProjectName)
-		}
+	// Determine peers network name. Only a custom name depends on the config
+	// being present; the generated one is always known, so teardown can still
+	// name the network to remove after .iso/peers.yml has been deleted.
+	peersNetworkName := defaultPeersNetworkName(worktreeProjectName, session)
+	if peers != nil && peers.Network != "" {
+		peersNetworkName = peers.Network
 	}
 
 	cm := &containerManager{
@@ -1295,9 +1293,29 @@ func (cm *containerManager) cleanupStaleResources() {
 	}
 }
 
-// getPeerContainerName returns the container name for a peer
+// defaultPeersNetworkName returns the generated peers network name for a project
+// and session. Session-scoped for the same reason peer container names are, so
+// two workspaces of one repo don't land on each other's network. Kept separate
+// from the config so teardown can still name the network when peers.yml is gone.
+func defaultPeersNetworkName(worktreeProjectName, session string) string {
+	if session == PeersDefaultSession {
+		return fmt.Sprintf("%s-iso-peers", worktreeProjectName)
+	}
+	return fmt.Sprintf("%s-%s-iso-peers", worktreeProjectName, session)
+}
+
+// getPeerContainerName returns the container name for a peer.
+//
+// The session is part of the name for the same reason it is part of the shell
+// container's: worktreeProjectName alone is not unique. It falls back to the
+// directory basename whenever git worktree detection fails, which it does for
+// every jj workspace, so two checkouts of the same repo would otherwise produce
+// identical peer names and silently share containers.
 func (cm *containerManager) getPeerContainerName(peerName string) string {
-	return fmt.Sprintf("%s-iso-peer-%s", cm.worktreeProjectName, peerName)
+	if cm.session == PeersDefaultSession {
+		return fmt.Sprintf("%s-iso-peer-%s", cm.worktreeProjectName, peerName)
+	}
+	return fmt.Sprintf("%s-%s-iso-peer-%s", cm.worktreeProjectName, cm.session, peerName)
 }
 
 // ensurePeersNetwork creates the peers network if it doesn't exist
@@ -1418,7 +1436,7 @@ func (cm *containerManager) startPeer(peerName string, config PeerConfig) (strin
 	// Convert environment map to slice
 	env := []string{
 		fmt.Sprintf("ISO_WORKDIR=%s", cm.config.WorkDir),
-		fmt.Sprintf("ISO_SESSION=peers"),
+		fmt.Sprintf("ISO_SESSION=%s", cm.session),
 		fmt.Sprintf("ISO_PEER_NAME=%s", peerName),
 		fmt.Sprintf("ISO_PEER_HOSTNAME=%s", config.Hostname),
 	}
@@ -1437,7 +1455,7 @@ func (cm *containerManager) startPeer(peerName string, config PeerConfig) (strin
 			"iso.managed":      "true",
 			"iso.project.name": cm.projectName,
 			"iso.project.dir":  cm.projectRoot,
-			"iso.session":      "peers",
+			"iso.session":      cm.session,
 			"iso.name":         peerName,
 			"iso.peer":         "true",
 			"iso.peer.name":    peerName,
@@ -1567,39 +1585,41 @@ func (cm *containerManager) startAllPeers(peerNames []string) error {
 }
 
 // stopAllPeers stops and removes all peer containers
+// Cleanup deliberately does not require peers to still be configured. Running
+// containers are found by label, and .iso/peers.yml can be edited or deleted
+// while they are up, so keying teardown off the config would strand exactly the
+// containers this exists to reap.
 func (cm *containerManager) stopAllPeers() error {
-	if cm.peers == nil {
-		return nil
-	}
-
-	// Get all peer containers for this project
-	peerContainers, err := cm.docker.listPeerContainers(cm.projectName)
+	// Get all peer containers for this project and session
+	peerContainers, err := cm.docker.listPeerContainers(cm.projectName, cm.session)
 	if err != nil {
 		return err
 	}
 
 	if len(peerContainers) == 0 {
 		slog.Info("no peer containers to stop")
-		return nil
-	}
+	} else {
+		// Stop and remove all peer containers
+		timeout := 10
+		for _, c := range peerContainers {
+			slog.Debug("stopping peer container", "name", c.Name)
+			if _, err := cm.docker.stopAndRemoveContainer(c.ID, c.Name, timeout); err != nil {
+				slog.Warn("failed to stop peer container", "name", c.Name, "error", err)
+			}
+		}
 
-	// Stop and remove all peer containers
-	timeout := 10
-	for _, c := range peerContainers {
-		slog.Debug("stopping peer container", "name", c.Name)
-		if _, err := cm.docker.stopAndRemoveContainer(c.ID, c.Name, timeout); err != nil {
-			slog.Warn("failed to stop peer container", "name", c.Name, "error", err)
+		// Also stop services
+		if len(cm.services) > 0 {
+			if err := cm.stopAllServices(); err != nil {
+				slog.Warn("failed to stop services", "error", err)
+			}
 		}
 	}
 
-	// Also stop services
-	if len(cm.services) > 0 {
-		if err := cm.stopAllServices(); err != nil {
-			slog.Warn("failed to stop services", "error", err)
-		}
-	}
-
-	// Remove the peers network
+	// Remove the peers network unconditionally. Finding no containers does not
+	// mean there is nothing left: they may have been removed by hand, or the
+	// config deleted, either of which leaves the network behind. Removing a
+	// network that was never created is a "not found" we already ignore.
 	if err := cm.docker.removeNetwork(cm.peersNetworkName); err != nil {
 		if !strings.Contains(err.Error(), "not found") {
 			slog.Warn("failed to remove peers network", "network", cm.peersNetworkName, "error", err)
@@ -1695,7 +1715,7 @@ func (cm *containerManager) execInPeer(peerName string, command []string, envVar
 	// Build exec environment
 	execEnv := []string{
 		fmt.Sprintf("ISO_WORKDIR=%s", cm.config.WorkDir),
-		fmt.Sprintf("ISO_SESSION=peers"),
+		fmt.Sprintf("ISO_SESSION=%s", cm.session),
 		fmt.Sprintf("ISO_UID=%s", currentUser.Uid),
 		fmt.Sprintf("ISO_GID=%s", currentUser.Gid),
 		fmt.Sprintf("ISO_PEER_NAME=%s", peerName),
