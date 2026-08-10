@@ -990,13 +990,24 @@ func (cm *containerManager) ensureNetwork() error {
 	}
 
 	if !exists {
-		_, err = cm.docker.createNetwork(cm.networkName)
+		_, err = cm.docker.createNetwork(cm.networkName, cm.networkLabels())
 		if err != nil {
 			return err
 		}
 	}
 
 	return nil
+}
+
+// networkLabels returns the labels stamped on a network ISO creates. Cleanup
+// uses them to confirm it owns a network before removing it.
+func (cm *containerManager) networkLabels() map[string]string {
+	return map[string]string{
+		"iso.managed":      "true",
+		"iso.project.name": cm.worktreeProjectName,
+		"iso.project.dir":  cm.projectRoot,
+		"iso.session":      cm.session,
+	}
 }
 
 // getServiceContainerName returns the container name for a persistent service
@@ -1356,7 +1367,7 @@ func (cm *containerManager) ensurePeersNetwork() error {
 	}
 
 	if !exists {
-		_, err = cm.docker.createNetwork(cm.peersNetworkName)
+		_, err = cm.docker.createNetwork(cm.peersNetworkName, cm.networkLabels())
 		if err != nil {
 			return err
 		}

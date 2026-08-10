@@ -364,13 +364,13 @@ Example:
 ```text
 myapp (/home/user/myapp):
   CONTAINER ID NAME            SESSION                 VOLUMES  STATUS
-  a0fc1e45f9c8 shell           dev                      5.6 GB  Up 8 minutes
-  4888fb7967b0 postgres        dev                        46 MB  Up 8 minutes (service: postgres)
+  a0fc1e45f9c8 shell           dev                      3.5 GB  Up 8 minutes
+  4888fb7967b0 postgres        dev                      500 MB  Up 8 minutes (service: postgres)
 
-  Volumes: 5.7 GB total (4.1 GB shared cache, 1.5 GB in sessions)
-         46 MB  69196412a7fc...        anonymous (image-declared)
+  Volumes: 4.0 GB total (2.0 GB shared cache, 2.0 GB in sessions)
+        500 MB  69196412a7fc...        anonymous (image-declared)
         1.5 GB  myapp-dev-data         session
-        2.3 GB  myapp-cache-go-pkg     cache (shared, kept until 'iso prune')
+        2.0 GB  myapp-cache-go-pkg     cache (shared, kept until 'iso prune')
 ```
 
 Volumes are labelled by what session cleanup does to them:

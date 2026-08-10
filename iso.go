@@ -450,6 +450,38 @@ func ListProjectSessions(projectDir string, withSizes bool) ([]Session, error) {
 	return sessions, nil
 }
 
+// isIsoOwnedNetwork reports whether cleanup is allowed to remove a network.
+//
+// Attached networks come straight off the containers, which is what makes
+// cleanup work for peers networks whose name comes from peers.yml. The flip
+// side is that a network the user attached an ISO container to by hand shows up
+// the same way, and removing that would reach outside what ISO created.
+//
+// Networks ISO creates now carry labels. The name check covers networks created
+// before the labels existed; it matches only names ISO itself would generate, so
+// an unrecognized network is left alone rather than removed.
+func isIsoOwnedNetwork(name string, labels map[string]string, session Session) bool {
+	if labels["iso.managed"] == "true" {
+		return true
+	}
+
+	project := session.ProjectName
+	generated := []string{
+		fmt.Sprintf("%s-network", project),
+		fmt.Sprintf("%s-%s-network", project, session.Session),
+		fmt.Sprintf("%s-iso-peers", project),
+		fmt.Sprintf("%s-%s-iso-peers", project, session.Session),
+	}
+
+	for _, candidate := range generated {
+		if name == candidate {
+			return true
+		}
+	}
+
+	return false
+}
+
 // RemovalReport summarizes what a session cleanup removed.
 type RemovalReport struct {
 	Sessions   int
@@ -480,6 +512,15 @@ func RemoveSessions(sessions []Session, dryRun bool) (RemovalReport, error) {
 	}
 	defer docker.close()
 
+	// Labels tell us which networks ISO created. A failure here leaves the map
+	// empty, which falls back to the naming check below - conservative either
+	// way, since an unrecognized network is left alone.
+	networkLabels, err := docker.listNetworkLabels()
+	if err != nil {
+		slog.Debug("failed to read network labels", "error", err)
+		networkLabels = map[string]map[string]string{}
+	}
+
 	networksToRemove := make(map[string]bool)
 	volumesToRemove := make(map[string]int64)
 	volumeSizeKnown := make(map[string]bool)
@@ -490,6 +531,12 @@ func RemoveSessions(sessions []Session, dryRun bool) (RemovalReport, error) {
 		for _, c := range session.Containers {
 			report.Containers++
 			for _, netName := range c.Networks {
+				if !isIsoOwnedNetwork(netName, networkLabels[netName], session) {
+					// A network ISO did not create, e.g. one the user attached
+					// the container to by hand. Not ours to delete.
+					slog.Debug("leaving foreign network alone", "network", netName)
+					continue
+				}
 				networksToRemove[netName] = true
 			}
 		}

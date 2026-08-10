@@ -138,6 +138,83 @@ func TestSessionSize(t *testing.T) {
 	}
 }
 
+// TestIsIsoOwnedNetwork guards the check that stops cleanup from deleting a
+// network ISO did not create. Cleanup takes networks straight off the
+// containers, so a network the user attached an ISO container to by hand is
+// indistinguishable from one ISO made unless this check holds it back.
+func TestIsIsoOwnedNetwork(t *testing.T) {
+	session := Session{ProjectName: "myapp", Session: "dev"}
+	defaultSession := Session{ProjectName: "myapp", Session: "default"}
+
+	cases := []struct {
+		name    string
+		network string
+		labels  map[string]string
+		session Session
+		want    bool
+	}{
+		{
+			// The label is the real signal, and it works even for a peers
+			// network whose name came from the user's peers.yml.
+			name:    "labelled network with a name ISO would never generate",
+			network: "my-custom-test-cluster",
+			labels:  map[string]string{"iso.managed": "true"},
+			session: session,
+			want:    true,
+		},
+		{
+			name:    "unlabelled network matching the session naming",
+			network: "myapp-dev-network",
+			session: session,
+			want:    true,
+		},
+		{
+			name:    "unlabelled network matching the default-session naming",
+			network: "myapp-network",
+			session: defaultSession,
+			want:    true,
+		},
+		{
+			name:    "unlabelled peers network for a session",
+			network: "myapp-dev-iso-peers",
+			session: session,
+			want:    true,
+		},
+		{
+			// The case that motivated the check: no label, no ISO-generated
+			// name, so leave it be.
+			name:    "foreign network the user attached by hand",
+			network: "my-custom-test-cluster",
+			session: session,
+			want:    false,
+		},
+		{
+			// Belonging to a different project is not ours to remove either.
+			name:    "another project's network",
+			network: "otherapp-dev-network",
+			session: session,
+			want:    false,
+		},
+		{
+			name:    "explicitly non-managed label",
+			network: "myapp-dev-network",
+			labels:  map[string]string{"iso.managed": "false"},
+			session: session,
+			want:    true, // name still matches what ISO generates
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isIsoOwnedNetwork(tc.network, tc.labels, tc.session)
+			if got != tc.want {
+				t.Fatalf("isIsoOwnedNetwork(%q, %v) = %v, want %v",
+					tc.network, tc.labels, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestIsEphemeral checks that throwaway sessions created by a bare `iso run`
 // are distinguishable from ones the user named.
 func TestIsEphemeral(t *testing.T) {

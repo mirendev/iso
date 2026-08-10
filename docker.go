@@ -264,15 +264,33 @@ func (d *dockerClient) removeImage(imageName string) error {
 	return nil
 }
 
-// createNetwork creates a Docker network
-func (d *dockerClient) createNetwork(networkName string) (string, error) {
+// createNetwork creates a Docker network with the given labels. The labels are
+// what lets cleanup tell a network ISO created from one the user brought, which
+// matters because peers.yml can point ISO at a network of the user's choosing.
+func (d *dockerClient) createNetwork(networkName string, labels map[string]string) (string, error) {
 	resp, err := d.client.NetworkCreate(d.ctx, networkName, network.CreateOptions{
 		Driver: "bridge",
+		Labels: labels,
 	})
 	if err != nil {
 		return "", fmt.Errorf("failed to create network: %w", err)
 	}
 	return resp.ID, nil
+}
+
+// listNetworkLabels returns the labels of every Docker network, keyed by name.
+func (d *dockerClient) listNetworkLabels() (map[string]map[string]string, error) {
+	networks, err := d.client.NetworkList(d.ctx, network.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list networks: %w", err)
+	}
+
+	labels := make(map[string]map[string]string, len(networks))
+	for _, net := range networks {
+		labels[net.Name] = net.Labels
+	}
+
+	return labels, nil
 }
 
 // networkExists checks if a Docker network exists
