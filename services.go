@@ -189,11 +189,39 @@ func findIsoDir() (isoPath string, projectRoot string, found bool) {
 	return "", "", false
 }
 
+// sanitizeProjectName converts a directory name into a valid Docker image
+// repository name. Docker requires repository names to be lowercase and to
+// contain only letters, digits, and the separators '.', '_', and '-', so a
+// project directory with capital letters (e.g. "MyProject") would otherwise
+// trigger a "repository name must be lowercase" complaint from Docker. Any
+// disallowed character is replaced with '-', and leading/trailing separators
+// are trimmed.
+func sanitizeProjectName(name string) string {
+	name = strings.ToLower(name)
+
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '.', r == '_', r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('-')
+		}
+	}
+
+	sanitized := strings.Trim(b.String(), "._-")
+	if sanitized == "" {
+		// Fall back to a stable placeholder so we never produce an empty name.
+		return "project"
+	}
+	return sanitized
+}
+
 // detectGitWorktree checks if the project is in a git worktree and returns project names
 // Returns baseProjectName (for shared caches) and worktreeProjectName (for isolated resources)
 func detectGitWorktree(projectRoot string) (baseProjectName, worktreeProjectName string) {
 	// Default: use the directory name as both base and worktree project name
-	worktreeProjectName = filepath.Base(projectRoot)
+	worktreeProjectName = sanitizeProjectName(filepath.Base(projectRoot))
 	baseProjectName = worktreeProjectName
 
 	// Try to detect if we're in a git worktree
@@ -233,7 +261,7 @@ func detectGitWorktree(projectRoot string) (baseProjectName, worktreeProjectName
 		// e.g., /home/user/myproject/.git -> /home/user/myproject
 		if strings.HasSuffix(commonPath, "/.git") || strings.HasSuffix(commonPath, "\\.git") {
 			baseRepoDir := filepath.Dir(commonPath)
-			baseProjectName = filepath.Base(baseRepoDir)
+			baseProjectName = sanitizeProjectName(filepath.Base(baseRepoDir))
 		}
 	}
 
