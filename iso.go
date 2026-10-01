@@ -114,10 +114,16 @@ func (c *Client) Reset() error {
 func (c *Client) Stop() error {
 	// Unconditional: peers are found by label, not by config, so this still
 	// reaps them when .iso/peers.yml has been edited away since they started.
-	if err := c.containerManager.stopAllPeers(); err != nil {
+	if _, err := c.containerManager.stopPeerContainers(); err != nil {
 		slog.Warn("failed to stop peers while stopping session", "session", c.containerManager.session, "error", err)
 	}
-	return c.containerManager.stopContainer()
+	if err := c.containerManager.stopContainer(); err != nil {
+		return err
+	}
+	// Last, because the session's services sit on the peers network until
+	// stopContainer removes them, whether or not any peers were still up.
+	c.containerManager.removePeersNetwork()
+	return nil
 }
 
 // Prune removes all cache volumes for the project
