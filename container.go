@@ -1159,7 +1159,7 @@ func (cm *containerManager) stopAllServices() error {
 	}
 
 	for serviceName := range cm.services {
-		containerName := fmt.Sprintf("%s_%s", cm.projectName, serviceName)
+		containerName := cm.getServiceContainerName(serviceName)
 
 		exists, err := cm.docker.containerExists(containerName)
 		if err != nil {
@@ -1627,43 +1627,57 @@ func (cm *containerManager) startAllPeers(peerNames []string) error {
 // while they are up, so keying teardown off the config would strand exactly the
 // containers this exists to reap.
 func (cm *containerManager) stopAllPeers() error {
-	// Get all peer containers for this project and session
-	peerContainers, err := cm.docker.listPeerContainers(cm.projectName, cm.session)
+	found, err := cm.stopPeerContainers()
 	if err != nil {
 		return err
 	}
-
-	if len(peerContainers) == 0 {
-		slog.Info("no peer containers to stop")
-	} else {
-		// Stop and remove all peer containers
-		timeout := 10
-		for _, c := range peerContainers {
-			slog.Debug("stopping peer container", "name", c.Name)
-			if _, err := cm.docker.stopAndRemoveContainer(c.ID, c.Name, timeout); err != nil {
-				slog.Warn("failed to stop peer container", "name", c.Name, "error", err)
-			}
-		}
-
-		// Also stop services
-		if len(cm.services) > 0 {
-			if err := cm.stopAllServices(); err != nil {
-				slog.Warn("failed to stop services", "error", err)
-			}
+	// Peers run against the session's services, so `peers down` takes those
+	// too, but only when there were peers to take down: with none, the
+	// services may be serving a plain session that never ran `peers up`.
+	if found && len(cm.services) > 0 {
+		if err := cm.stopAllServices(); err != nil {
+			slog.Warn("failed to stop services", "error", err)
 		}
 	}
+	cm.removePeersNetwork()
+	return nil
+}
 
-	// Remove the peers network unconditionally. Finding no containers does not
-	// mean there is nothing left: they may have been removed by hand, or the
-	// config deleted, either of which leaves the network behind. Removing a
-	// network that was never created is a "not found" we already ignore.
+// stopPeerContainers stops and removes this session's peer containers and
+// reports whether there were any.
+func (cm *containerManager) stopPeerContainers() (bool, error) {
+	peerContainers, err := cm.docker.listPeerContainers(cm.projectName, cm.session)
+	if err != nil {
+		return false, err
+	}
+	if len(peerContainers) == 0 {
+		slog.Info("no peer containers to stop")
+		return false, nil
+	}
+	timeout := 10
+	for _, c := range peerContainers {
+		slog.Debug("stopping peer container", "name", c.Name)
+		if _, err := cm.docker.stopAndRemoveContainer(c.ID, c.Name, timeout); err != nil {
+			slog.Warn("failed to stop peer container", "name", c.Name, "error", err)
+		}
+	}
+	return true, nil
+}
+
+// removePeersNetwork removes the peers network unconditionally. Finding no
+// peer containers does not mean there is nothing left: they may have been
+// removed by hand, or the config deleted, either of which leaves the network
+// behind. Removing a network that was never created is a "not found" we
+// already ignore.
+//
+// `peers up` attaches the session's services to this network, so it only
+// comes away once they're gone. Callers run it after whatever stops them.
+func (cm *containerManager) removePeersNetwork() {
 	if err := cm.docker.removeNetwork(cm.peersNetworkName); err != nil {
 		if !strings.Contains(err.Error(), "not found") {
 			slog.Warn("failed to remove peers network", "network", cm.peersNetworkName, "error", err)
 		}
 	}
-
-	return nil
 }
 
 // execInPeer executes a command in a peer container
