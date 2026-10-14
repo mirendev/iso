@@ -9,6 +9,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -23,6 +24,8 @@ import (
 // containerManager handles container lifecycle operations
 type containerManager struct {
 	docker              *dockerClient
+	imageRepo           string // e.g. "myapp-shell"; see image() for the tag
+	imageNameOnce       sync.Once
 	imageName           string
 	containerName       string
 	dockerfilePath      string
@@ -87,10 +90,11 @@ func newContainerManager(session string) (*containerManager, error) {
 	}
 
 	// Generate names with session support
-	// Image name uses worktreeProjectName (worktrees can have different Dockerfiles)
+	// Image name uses worktreeProjectName, tagged by the Dockerfile's content
+	// (see image()), so a changed Dockerfile builds a new image
 	// Container and network names use worktreeProjectName (isolated per worktree)
 	// Cache volumes will use baseProjectName (shared across worktrees)
-	imageName := fmt.Sprintf("%s-shell", worktreeProjectName)
+	imageRepo := fmt.Sprintf("%s-shell", worktreeProjectName)
 
 	var networkName, containerName string
 	if session == "default" {
@@ -123,7 +127,7 @@ func newContainerManager(session string) (*containerManager, error) {
 
 	cm := &containerManager{
 		docker:              docker,
-		imageName:           imageName,
+		imageRepo:           imageRepo,
 		containerName:       containerName,
 		dockerfilePath:      dockerfilePath,
 		projectName:         worktreeProjectName, // Maintain backward compatibility
@@ -269,20 +273,53 @@ func (cm *containerManager) ensureVolumes() error {
 
 // ensureImage ensures the Docker image exists, building it if necessary
 func (cm *containerManager) ensureImage() error {
-	exists, err := cm.docker.imageExists(cm.imageName)
+	exists, err := cm.docker.imageExists(cm.image())
 	if err != nil {
 		return err
 	}
 
 	if !exists {
-		slog.Debug("building image", "image", cm.imageName, "dockerfile", cm.dockerfilePath)
-		if err := cm.docker.buildImage(cm.dockerfilePath, cm.imageName); err != nil {
+		slog.Debug("building image", "image", cm.image(), "dockerfile", cm.dockerfilePath)
+		if err := cm.docker.buildImage(cm.dockerfilePath, cm.image()); err != nil {
 			return err
 		}
-		slog.Debug("image built successfully", "image", cm.imageName)
+		slog.Debug("image built successfully", "image", cm.image())
 	}
 
 	return nil
+}
+
+// image returns the image to build and run, tagged by the content of the
+// Dockerfile and the files it copies in (see imageTag). It's computed on first
+// use rather than up front so that commands which never touch the image, like
+// `iso stop`, don't walk the build inputs. If the Dockerfile itself can't be
+// read the tag falls back to "latest" and the build reports the real problem.
+func (cm *containerManager) image() string {
+	cm.imageNameOnce.Do(func() {
+		// Same context directory buildImage sends to Docker.
+		tag, err := imageTag(filepath.Dir(filepath.Dir(cm.dockerfilePath)), cm.dockerfilePath)
+		if err != nil {
+			slog.Warn("could not hash the Dockerfile, using an untracked image tag", "error", err)
+			tag = "latest"
+		}
+		cm.imageName = fmt.Sprintf("%s:%s", cm.imageRepo, tag)
+	})
+	return cm.imageName
+}
+
+// warnIfStaleImage warns when a reused container was created from an image
+// the Dockerfile no longer builds. A persistent session keeps its container
+// (and whatever was set up inside it) until it's reset, so a Dockerfile change
+// otherwise goes unnoticed: commands keep running against the old toolchain.
+func (cm *containerManager) warnIfStaleImage(name, containerID, fix string) {
+	info, err := cm.docker.client.ContainerInspect(cm.docker.ctx, containerID)
+	if err != nil || info.Config == nil {
+		return
+	}
+	if info.Config.Image != cm.image() {
+		slog.Warn("container was created from an older build of the Dockerfile; run `"+fix+"` to recreate it",
+			"container", name, "image", info.Config.Image, "current", cm.image())
+	}
 }
 
 // startContainer starts a new container
@@ -369,7 +406,7 @@ func (cm *containerManager) startContainer() (string, error) {
 
 	// Create container
 	containerConfig := &container.Config{
-		Image:      cm.imageName,
+		Image:      cm.image(),
 		WorkingDir: cm.config.WorkDir,
 		Cmd:        []string{"/iso", "_internal-init"},
 		Env:        env,
@@ -607,6 +644,7 @@ func (cm *containerManager) runCommand(command []string, envVars []string, ephem
 			if err != nil {
 				return 0, err
 			}
+			cm.warnIfStaleImage(cm.containerName, containerID, "iso reset")
 			if err := cm.docker.client.ContainerStart(cm.docker.ctx, containerID, container.StartOptions{}); err != nil {
 				return 0, fmt.Errorf("failed to start container: %w", err)
 			}
@@ -627,6 +665,7 @@ func (cm *containerManager) runCommand(command []string, envVars []string, ephem
 		if err != nil {
 			return 0, err
 		}
+		cm.warnIfStaleImage(cm.containerName, containerID, "iso reset")
 	}
 
 	// Calculate the working directory in the container
@@ -937,25 +976,25 @@ func (cm *containerManager) stopContainer() error {
 // rebuildImage rebuilds the Docker image
 func (cm *containerManager) rebuildImage() error {
 	// Check if image exists and remove it
-	exists, err := cm.docker.imageExists(cm.imageName)
+	exists, err := cm.docker.imageExists(cm.image())
 	if err != nil {
 		return err
 	}
 
 	if exists {
-		slog.Info("removing existing image", "image", cm.imageName)
-		if err := cm.docker.removeImage(cm.imageName); err != nil {
+		slog.Info("removing existing image", "image", cm.image())
+		if err := cm.docker.removeImage(cm.image()); err != nil {
 			return err
 		}
 	}
 
 	// Build the image
-	slog.Info("building image", "image", cm.imageName, "dockerfile", cm.dockerfilePath)
-	if err := cm.docker.buildImage(cm.dockerfilePath, cm.imageName); err != nil {
+	slog.Info("building image", "image", cm.image(), "dockerfile", cm.dockerfilePath)
+	if err := cm.docker.buildImage(cm.dockerfilePath, cm.image()); err != nil {
 		return err
 	}
 
-	slog.Info("image built successfully", "image", cm.imageName)
+	slog.Info("image built successfully", "image", cm.image())
 	return nil
 }
 
@@ -1224,7 +1263,7 @@ func (cm *containerManager) pruneCacheVolumes() error {
 
 // pullImage pulls a Docker image from a registry
 func (cm *containerManager) pullImage() error {
-	out, err := cm.docker.client.ImagePull(cm.docker.ctx, cm.imageName, image.PullOptions{})
+	out, err := cm.docker.client.ImagePull(cm.docker.ctx, cm.image(), image.PullOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to pull image: %w", err)
 	}
@@ -1392,6 +1431,7 @@ func (cm *containerManager) startPeer(peerName string, config PeerConfig) (strin
 		if err != nil {
 			return "", err
 		}
+		cm.warnIfStaleImage(containerName, containerID, "iso peers down")
 		return containerID, nil
 	}
 
@@ -1407,6 +1447,7 @@ func (cm *containerManager) startPeer(peerName string, config PeerConfig) (strin
 		if err != nil {
 			return "", err
 		}
+		cm.warnIfStaleImage(containerName, containerID, "iso peers down")
 		if err := cm.docker.client.ContainerStart(cm.docker.ctx, containerID, container.StartOptions{}); err != nil {
 			return "", fmt.Errorf("failed to start peer container: %w", err)
 		}
@@ -1483,7 +1524,7 @@ func (cm *containerManager) startPeer(peerName string, config PeerConfig) (strin
 
 	// Create container config
 	containerConfig := &container.Config{
-		Image:      cm.imageName,
+		Image:      cm.image(),
 		WorkingDir: cm.config.WorkDir,
 		Cmd:        []string{"/iso", "_internal-init"},
 		Env:        env,
