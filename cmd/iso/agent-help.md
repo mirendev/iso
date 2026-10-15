@@ -93,7 +93,7 @@ extra_hosts:
 ### .iso/Dockerfile
 
 The Dockerfile defines your project's container environment. ISO will:
-- Build an image named `<project>-shell` from this Dockerfile
+- Build an image named `<project>-shell:<hash>` from this Dockerfile
 - Mount your project root at the configured workdir (default: `/workspace`) in the container
 - Set the working directory based on where you run commands
 
@@ -259,7 +259,7 @@ su -s /bin/bash "#${ISO_UID}" -c "your-command-here"
 All resources are automatically named based on your project directory:
 
 - **Project name**: Base name of the directory containing `.iso`
-- **Image**: `<project>-shell`
+- **Image**: `<project>-shell:<hash>`, where the hash covers the Dockerfile and the files it COPYs or ADDs (a copy of the whole context, like `COPY . /src`, isn't hashed, since the workspace is bind-mounted anyway; any other directory copy is, so writing into it triggers a rebuild)
 - **Main container**: `<project>-shell`
 - **Service containers**: `<project>-<service-name>`
 - **Network**: `<project>-network`
@@ -267,7 +267,7 @@ All resources are automatically named based on your project directory:
 - **Peers network**: `<project>-iso-peers` (or custom name from peers.yml)
 
 Example: If your project is in `/home/user/myapp`:
-- Image: `myapp-shell`
+- Image: `myapp-shell:3f9a1c2b7d4e`
 - Container: `myapp-shell`
 - MySQL service: `myapp-mysql`
 - Network: `myapp-network`
@@ -573,15 +573,23 @@ iso run bash -c "echo hi" # Yet another fresh environment
 ### Rebuilding After Changes
 
 ```bash
-# After modifying .iso/Dockerfile
-iso build --rebuild
+# After modifying .iso/Dockerfile (or a file it copies in), the image tag
+# changes, so the next run builds the new image on its own.
 
 # For ephemeral sessions, just run your command (uses new image automatically)
 iso run <your-command>
 
-# For persistent sessions, reset the container to use the new image
+# A persistent session (or a running peer) keeps its container, and warns
+# that it was created from an older build. Reset it to use the new image
 ISO_SESSION=dev iso reset
 ISO_SESSION=dev iso run <your-command>
+
+# To rebuild with an unchanged Dockerfile (e.g. to pick up new base packages)
+iso build --rebuild
+
+# Images from earlier Dockerfiles stay behind; list and remove them with docker
+docker images myapp-shell
+docker rmi myapp-shell:<old-hash>
 ```
 
 ### Working with Peers (Distributed Testing)
@@ -638,7 +646,7 @@ peers:
 2. **Auto-detection**: ISO automatically finds the `.iso` directory by searching upward from the current directory
 3. **No configuration needed**: All settings are inferred from the directory structure
 4. **Service naming**: Services in `services.yml` are accessed by their key name (e.g., `mysql`, `redis`)
-5. **Image caching**: Images are cached; use `--rebuild` only when Dockerfile changes
+5. **Image caching**: Images are tagged by the Dockerfile's content, so a Dockerfile change builds a new image automatically; `--rebuild` is only for rebuilding an unchanged one
 6. **Ephemeral by default**: Each `iso run` uses an ephemeral session that auto-cleans after execution
 7. **Persistent sessions**: Use `--session <name>` or set `ISO_SESSION` env var for reusable containers across multiple commands
 8. **Session management**: Use `iso list` to see all sessions and the disk they use, `iso stop --session <name>` to tear down a specific session, or `iso cleanup` to go through the sessions you no longer need

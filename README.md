@@ -233,7 +233,7 @@ echo "Cleaning up..."
 ## How It Works
 
 1. **Container Detection**: Checks if a container with the specified name is already running
-2. **Image Building**: If no image exists, builds it from the Dockerfile
+2. **Image Building**: If no image exists for the current Dockerfile, builds it. The image is tagged by a hash of the Dockerfile and the files it copies in, so editing either builds a fresh image, and a reused container from an older build gets a warning to `iso reset`. Images from earlier Dockerfiles aren't removed automatically; `docker images <project>-shell` lists them
 3. **Service Management**: Starts and monitors services defined in services.yml
 4. **Container Lifecycle**:
    - If container is running: executes command directly inside it

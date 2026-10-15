@@ -142,12 +142,12 @@ type Status struct {
 // Status returns the current status of the image and container
 func (c *Client) Status() (*Status, error) {
 	status := &Status{
-		ImageName:     c.containerManager.imageName,
+		ImageName:     c.containerManager.image(),
 		ContainerName: c.containerManager.containerName,
 	}
 
 	// Check image status
-	imageExists, err := c.containerManager.docker.imageExists(c.containerManager.imageName)
+	imageExists, err := c.containerManager.docker.imageExists(c.containerManager.image())
 	if err != nil {
 		return nil, err
 	}
